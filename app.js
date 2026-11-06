@@ -283,7 +283,7 @@ async function loadQuotes() {
 }
 
 // ------------------------------------------------------------------ preços ao vivo (Binance)
-let ws, wsSyms = "";
+let ws, wsSyms = "", wsHost = 0;
 function connectLive() {
   const syms = new Set(["BTC", "ETH"]);
   for (const h of S.holdings) if (!STABLE.has(h.symbol) && h.price_usd != null) syms.add(h.symbol);
@@ -293,8 +293,14 @@ function connectLive() {
   if (key === wsSyms && ws && ws.readyState <= 1) return;
   wsSyms = key;
   try { ws?.close(); } catch { /* */ }
-  ws = new WebSocket(`wss://stream.binance.com:9443/stream?streams=${key}`);
+  // data-stream.binance.vision é o endereço só de cotações (funciona em redes que bloqueiam o principal)
+  const hosts = ["wss://data-stream.binance.vision", "wss://stream.binance.com:9443"];
+  ws = new WebSocket(`${hosts[wsHost % hosts.length]}/stream?streams=${key}`);
+  let got = false;
+  const sock = ws;
+  setTimeout(() => { if (!got && sock === ws) { wsHost++; wsSyms = ""; try { sock.close(); } catch { /* */ } } }, 8000);
   ws.onmessage = (ev) => {
+    got = true;
     const d = JSON.parse(ev.data).data;
     if (!d?.s) return;
     if (d.s === "USDTBRL") {
