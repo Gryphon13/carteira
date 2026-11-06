@@ -1621,7 +1621,7 @@ async function readTables(file) {
 }
 const norm = (x) => String(x ?? "").trim().toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9]+/g, "_");
 const HEAD = {
-  t: ["utc_time", "time", "date", "date_utc", "horario_utc", "hora_utc", "data_utc", "data", "horario", "tempo_utc"],
+  t: ["utc_time", "time", "date", "date_utc", "horario_utc", "hora_utc", "data_utc", "data", "horario", "tempo_utc", "tempo", "hora", "data_hora"],
   a: ["account", "conta"],
   o: ["operation", "operacao", "tipo", "type"],
   c: ["coin", "moeda", "asset", "ativo", "criptomoeda"],
@@ -1629,6 +1629,89 @@ const HEAD = {
 };
 const FIATS = new Set(["BRL", "USD", "EUR"]);
 const isCash = (c) => STABLE.has(c) || FIATS.has(c);
+// Classifica as linhas do "Histórico de transações" da Binance.
+// all: [{ ts (UTC ms), acc, op, coin, v }]; api: trades que já vieram pela API
+function classifyStatement(all, api) {
+  const FUT = /futures|futuros|margin|margem/i;
+  const SKIP = /transfer between|transfer[eê]ncia entre|subscription|redemption|subscri[cç][aã]o|resgate|slot auction staking|launchpad subscribe|savings purchase|savings principal|staking purchase|main account|funding account|isolated/i;
+  const INCOME = /interest|reward|airdrop|launchpool|launchpad token distribution|^distribution|cashback|commission|bonus|dividend|voucher|campaign|mining|juros|recompensa|rendimento|b[oô]nus|comiss[aã]o/i;
+  const MOVE_IN = /^deposit$|crypto deposit|fiat deposit|^dep[oó]sito/i;
+  const MOVE_OUT = /^withdraw|crypto withdraw|fiat withdraw|^saque|^retirada/i;
+  const FEE = /fee|taxa/i;
+  const month = (ts) => new Date(ts).toISOString().slice(0, 7);
+  const mDate = (ym) => new Date(ym + "-28T12:00:00Z").toISOString();
+  const agg = (m, k, v) => m.set(k, (m.get(k) || 0) + v);
+  const lastTs = new Map(); // data do último lançamento de cada mês agrupado
+  const aggM = (m, coin, ts, v, kind) => { const k = `${coin}|${month(ts)}`; agg(m, k, v); lastTs.set(kind + k, Math.max(lastTs.get(kind + k) || 0, ts)); };
+  const groups = new Map(), income = new Map(), fut = new Map(), fees = new Map();
+  const txs = [], trades = [];
+  let moves = 0, other = 0, dupes = 0;
+  for (const r of all) {
+    if (FUT.test(r.acc)) {
+      if (!/transfer/i.test(r.op)) aggM(fut, r.coin, r.ts, r.v, "fut");
+      continue;
+    }
+    if (MOVE_IN.test(r.op) || MOVE_OUT.test(r.op)) {
+      const dir = r.v > 0 ? "in" : "out";
+      txs.push({ tx_hash: `csv-${dir}-${r.ts}-${r.coin}-${Math.abs(r.v)}`, ts: new Date(r.ts).toISOString(), direction: dir, symbol: r.coin, amount: Math.abs(r.v), counterparty: `extrato Binance: ${r.op}` });
+      moves++;
+      continue;
+    }
+    if (SKIP.test(r.op)) continue; // dinheiro só trocou de "gaveta" dentro da Binance
+    if (INCOME.test(r.op) && r.v > 0) { aggM(income, r.coin, r.ts, r.v, "rend"); continue; }
+    const k = `${Math.floor(r.ts / 1000)}|${r.acc}`;
+    (groups.get(k) || groups.set(k, []).get(k)).push(r);
+  }
+  const apiKeys = api.map((t) => ({ t: new Date(t.ts).getTime(), pair: [t.base, t.quote].sort().join("/") }));
+  const dupe = (ts, a, b) => { const pair = [a, b].sort().join("/"); return apiKeys.some((x) => x.pair === pair && Math.abs(x.t - ts) < 90_000); };
+  for (const [, rs] of groups) {
+    const net = new Map(), fee = new Map();
+    for (const r of rs) agg(FEE.test(r.op) ? fee : net, r.coin, r.v);
+    for (const [c, v] of fee) aggM(fees, c, rs[0].ts, v, "taxa");
+    const pos = [...net].filter(([, v]) => v > 0), neg = [...net].filter(([, v]) => v < 0);
+    const ts = rs[0].ts;
+    if (pos.length === 1 && neg.length === 1) {
+      const [rc, rv] = pos[0], [sc, sv] = neg[0];
+      if (dupe(ts, rc, sc)) { dupes++; continue; }
+      const sell = isCash(rc) && !isCash(sc);
+      const t = sell
+        ? { base: sc, quote: rc, base_qty: -sv, quote_qty: rv, is_buy: false }
+        : { base: rc, quote: sc, base_qty: rv, quote_qty: -sv, is_buy: true };
+      const [fc, fv] = [...fee][0] || [null, 0];
+      trades.push({ kind: "csv", ts: new Date(ts).toISOString(), ...t, fee: fc ? Math.abs(fv) : null, fee_asset: fc, id: `csv:${ts}:${t.base}:${t.quote}:${t.base_qty}` });
+      continue;
+    }
+    // mais de duas moedas (ex.: "poeira" convertida em BNB) ou uma só (troca de token, ajuste): entra como entrada/saída
+    for (const [c, v] of net) {
+      if (!v) continue;
+      const dir = v > 0 ? "in" : "out";
+      txs.push({ tx_hash: `csv-aj-${ts}-${c}-${dir}`, ts: new Date(ts).toISOString(), direction: dir, symbol: c, amount: Math.abs(v), counterparty: `extrato Binance: ${[...new Set(rs.map((r) => r.op))].join(", ")}` });
+      other++;
+    }
+  }
+  const monthly = (m, kind, label) => {
+    for (const [k, v] of m) {
+      if (Math.abs(v) < 1e-12) continue;
+      const [coin, ym] = k.split("|");
+      const dir = v > 0 ? "in" : "out";
+      txs.push({ tx_hash: `csv-${kind}-${coin}-${ym}`, ts: new Date(lastTs.get(kind + k) || Date.parse(mDate(ym))).toISOString(), direction: dir, symbol: coin, amount: Math.abs(v), counterparty: `${label} de ${ym.split("-").reverse().join("/")}` });
+    }
+  };
+  monthly(income, "rend", "rendimentos (Earn, staking, airdrops)");
+  monthly(fut, "fut", "resultado de futuros (lucro/prejuízo, taxas e funding)");
+  monthly(fees, "taxa", "taxas de negociação");
+  const months = (m) => new Set([...m.keys()].map((k) => k.split("|")[1])).size;
+  return { trades, txs, stats: { trades: trades.length, moves, other, dupes, incomeMonths: months(income), futMonths: months(fut) } };
+}
+// fuso do arquivo: "…(UTC-3)…" no nome ou coluna UTC_Time
+function fileOffsetMs(name, timeHeader) {
+  if (/utc_time/.test(timeHeader)) return 0;
+  const m = String(name).match(/UTC([+-]{1,2})(\d{1,2})(?::?(\d{2}))?/i);
+  if (!m) return 0;
+  const sign = m[1].slice(-1) === "-" ? -1 : 1;
+  return sign * (Number(m[2]) * 3600e3 + Number(m[3] || 0) * 60e3);
+}
+
 async function importBinanceCSV(files) {
   const rep = reportBox();
   rep.classList.remove("hidden");
@@ -1650,9 +1733,11 @@ async function importBinanceCSV(files) {
       const ix = (k) => head.findIndex((h) => HEAD[k].includes(h));
       const iT = ix("t"), iA = ix("a"), iO = ix("o"), iC = ix("c"), iV = ix("v");
       if (iT < 0 || iV < 0) { seenHeads.push(`${f.name}: ${rows[hi].join(" | ")}`); continue; }
+      const off = fileOffsetMs(f.name, head[iT]); // horário local do arquivo → UTC
       for (const r of rows.slice(hi + 1)) {
         const raw = r[iT];
-        const ts = typeof raw === "number" ? Math.round((raw - 25569) * 86400e3) : csvDate(String(raw || ""));
+        const t0 = typeof raw === "number" ? Math.round((raw - 25569) * 86400e3) : csvDate(String(raw || ""));
+        const ts = t0 ? t0 - off : null;
         const vv = r[iV];
         const v = typeof vv === "number" ? vv : Number(String(vv || "").replace(/\s/g, "").replace(/,(?=\d{1,8}$)/, ".").replace(/[^\d.eE+-]/g, ""));
         if (!ts || !isFinite(v) || !v) continue;
@@ -1665,75 +1750,24 @@ async function importBinanceCSV(files) {
       + (seenHeads.length ? `<div class="muted small">Cabeçalhos encontrados: ${esc(seenHeads.slice(0, 3).join(" · "))}</div>` : "");
     return;
   }
-  const SKIP = /transfer|subscription|redemption|savings purchase|savings principal|staking purchase|staking redemption|main account|funding account|isolated|margin loan|repay|collateral|transfer[eê]ncia|assinatura|resgate|subscri[cç][aã]o/i;
-  const INCOME = /interest|distribution|reward|airdrop|staking rewards|launchpool|mining|cashback|commission|bonus|dividend|juros|distribui[cç][aã]o|recompensa|rendimento|b[oô]nus|comiss[aã]o/i;
-  const MOVE_IN = /^deposit$|crypto deposit|fiat deposit|p2p.*(buy|receive)|^dep[oó]sito/i;
-  const MOVE_OUT = /^withdraw|crypto withdraw|fiat withdraw|^saque|^retirada/i;
-  const FEE = /fee|taxa/i;
-  // agrupa por segundo + conta (uma operação gera várias linhas)
-  const groups = new Map(), moves = [], income = new Map();
-  for (const r of all) {
-    if (MOVE_IN.test(r.op) || MOVE_OUT.test(r.op)) { moves.push(r); continue; }
-    if (SKIP.test(r.op)) continue;
-    if (INCOME.test(r.op) && r.v > 0) {
-      const k = `${r.coin}|${new Date(r.ts).toISOString().slice(0, 7)}`;
-      income.set(k, (income.get(k) || 0) + r.v);
-      continue;
-    }
-    const k = `${Math.floor(r.ts / 1000)}|${r.acc}`;
-    (groups.get(k) || groups.set(k, []).get(k)).push(r);
-  }
-  // trades que já vieram pela API (para não contar duas vezes)
-  const { data: api } = await sb.from("binance_trades").select("id,ts,base,quote").neq("kind", "csv");
-  const apiKeys = (api || []).map((t) => ({ t: new Date(t.ts).getTime(), pair: [t.base, t.quote].sort().join("/") }));
-  const dupe = (ts, a, b) => { const pair = [a, b].sort().join("/"); return apiKeys.some((x) => x.pair === pair && Math.abs(x.t - ts) < 90_000); };
-  const trades = [];
-  let skipped = 0, odd = 0;
-  for (const [, rs] of groups) {
-    const net = new Map(), fee = new Map();
-    for (const r of rs) {
-      const m = FEE.test(r.op) ? fee : net;
-      m.set(r.coin, (m.get(r.coin) || 0) + r.v);
-    }
-    const pos = [...net].filter(([, v]) => v > 0), neg = [...net].filter(([, v]) => v < 0);
-    if (pos.length !== 1 || neg.length !== 1) { if (pos.length || neg.length) odd++; continue; }
-    const [rc, rv] = pos[0], [sc, sv] = neg[0];
-    const ts = rs[0].ts;
-    if (dupe(ts, rc, sc)) { skipped++; continue; }
-    const sell = isCash(rc) && !isCash(sc);
-    const t = sell
-      ? { base: sc, quote: rc, base_qty: -sv, quote_qty: rv, is_buy: false }
-      : { base: rc, quote: sc, base_qty: rv, quote_qty: -sv, is_buy: true };
-    const [fc, fv] = [...fee][0] || [null, 0];
-    trades.push({ user_id: S.user.id, kind: "csv", ts: new Date(ts).toISOString(), ...t, fee: fc ? Math.abs(fv) : null, fee_asset: fc,
-      id: `csv:${ts}:${t.base}:${t.quote}:${t.base_qty}` });
-  }
-  // depósitos, saques e rendimentos viram movimentações
-  const txs = [];
-  for (const r of moves) {
-    const dir = MOVE_IN.test(r.op) ? "in" : "out";
-    txs.push({ user_id: S.user.id, source: "Binance", wallet_id: S.wallets.find((w) => w.kind === "binance")?.id ?? null, network: "binance",
-      tx_hash: `csv-${dir}-${r.ts}-${r.coin}-${Math.abs(r.v)}`, ts: new Date(r.ts).toISOString(), direction: dir, symbol: r.coin, amount: Math.abs(r.v),
-      counterparty: `extrato Binance: ${r.op}` });
-  }
-  for (const [k, v] of income) {
-    const [coin, ym] = k.split("|");
-    txs.push({ user_id: S.user.id, source: "Binance", wallet_id: S.wallets.find((w) => w.kind === "binance")?.id ?? null, network: "binance",
-      tx_hash: `csv-rend-${coin}-${ym}`, ts: new Date(ym + "-28T12:00:00Z").toISOString(), direction: "in", symbol: coin, amount: v,
-      counterparty: `rendimentos de ${ym.split("-").reverse().join("/")} (Earn, staking, airdrops)` });
-  }
+  const { data: api } = await sb.from("binance_trades").select("id,ts,base,quote").neq("kind", "csv").limit(10000);
+  const res = classifyStatement(all, api || []);
+  const wid = S.wallets.find((w) => w.kind === "binance")?.id ?? null;
+  const trades = res.trades.map((t) => ({ ...t, user_id: S.user.id }));
+  const txs = res.txs.map((t) => ({ ...t, user_id: S.user.id, source: "Binance", wallet_id: wid, network: "binance" }));
   rep.innerHTML = `<span class="muted">Gravando ${trades.length} operações e ${txs.length} movimentações…</span>`;
   for (let i = 0; i < trades.length; i += 500) {
     const { error } = await sb.from("binance_trades").upsert(trades.slice(i, i + 500), { onConflict: "user_id,id", ignoreDuplicates: true });
     if (error) { rep.innerHTML = `<div class="err">Erro ao gravar: ${esc(error.message)}</div>`; return; }
   }
   for (let i = 0; i < txs.length; i += 500) {
-    const { error } = await sb.from("transactions").upsert(txs.slice(i, i + 500), { onConflict: "user_id,network,tx_hash,symbol,direction", ignoreDuplicates: true });
+    const { error } = await sb.from("transactions").upsert(txs.slice(i, i + 500), { onConflict: "user_id,network,tx_hash,symbol,direction" });
     if (error) { rep.innerHTML = `<div class="err">Erro ao gravar: ${esc(error.message)}</div>`; return; }
   }
-  const first = all.length ? new Date(Math.min(...all.map((r) => r.ts))).toLocaleDateString("pt-BR") : "—";
-  const last = all.length ? new Date(Math.max(...all.map((r) => r.ts))).toLocaleDateString("pt-BR") : "—";
-  rep.innerHTML = `<div>✓ <b>Extrato lido</b> (${first} a ${last}): ${trades.length} compra(s)/venda(s), ${moves.length} depósito(s)/saque(s) e ${income.size} mês(es) de rendimentos.${skipped ? ` ${skipped} operação(ões) já tinham vindo pela API e foram ignoradas.` : ""}${odd ? ` ${odd} lançamento(s) com mais de duas moedas ficaram de fora (ex.: conversão de "poeira" em BNB).` : ""}</div><div class="muted">Recalculando o preço médio…</div>`;
+  const st = res.stats;
+  const first = new Date(Math.min(...all.map((r) => r.ts))).toLocaleDateString("pt-BR");
+  const last = new Date(Math.max(...all.map((r) => r.ts))).toLocaleDateString("pt-BR");
+  rep.innerHTML = `<div>✓ <b>Extrato lido</b> (${first} a ${last}, ${all.length} linhas): ${st.trades} compra(s)/venda(s)/conversão(ões), ${st.moves} depósito(s)/saque(s), ${st.incomeMonths} mês(es) de rendimentos${st.futMonths ? `, ${st.futMonths} mês(es) de resultado de futuros` : ""} e ${st.other} outro(s) ajuste(s) de saldo (poeira convertida em BNB, troca de token etc.).${st.dupes ? ` ${st.dupes} operação(ões) já tinham vindo pela API e não foram repetidas.` : ""}</div><div class="muted">Recalculando o preço médio…</div>`;
   await runHist(null, true);
 }
 
