@@ -131,7 +131,7 @@ td .pct { font-family: var(--mono); font-size: 12px; }
 .modal { position: fixed; inset: 0; background: rgba(3, 6, 10, .72); z-index: 50; display: grid; place-items: start center; padding: 30px 14px; overflow-y: auto; }
 .modal-card { width: 100%; max-width: 1000px; background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 18px; display: grid; gap: 14px; }
 .modal-head { display: flex; justify-content: space-between; align-items: center; }
-.d-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; }
+.d-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(118px, 1fr)); gap: 10px; }
 .d-stats .stat { padding: 10px 12px; }
 .d-stats .v { font-size: 16px; }
 .tv-chart { height: 460px; border-radius: 12px; overflow: hidden; border: 1px solid var(--line); }
