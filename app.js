@@ -25,6 +25,7 @@ const S = {
   prefs: {},
   cb: {},
   flags: {},
+  ops: [],
   pieMode: store("pie") || "ativo",
   hide: store("hide") === "1",
   filters: loadFilters(),
@@ -252,7 +253,7 @@ function totals() {
 
 // ------------------------------------------------------------------ dados
 async function loadAll() {
-  const [w, h, m, st, tx, sn, pf, cb, fl] = await Promise.all([
+  const [w, h, m, st, tx, sn, pf, cb, fl, op] = await Promise.all([
     sb.from("wallets").select("*").order("created_at"),
     sb.from("holdings").select("*"),
     sb.from("manual_assets").select("*").order("created_at"),
@@ -262,6 +263,7 @@ async function loadAll() {
     sb.from("user_prefs").select("*").maybeSingle(),
     sb.from("cost_basis").select("*"),
     sb.from("token_flags").select("*"),
+    sb.from("manual_ops").select("*").order("op_date"),
   ]);
   for (const r of [w, h, m, st, tx, sn]) if (r.error) throw r.error;
   S.wallets = w.data;
@@ -272,6 +274,7 @@ async function loadAll() {
   S.snaps = sn.data;
   S.prefs = pf.data || {};
   S.cb = Object.fromEntries((cb.data || []).map((c) => [c.symbol, c]));
+  S.ops = op.data || [];
   S.flags = Object.fromEntries((fl.data || []).map((x) => [`${x.network}:${x.contract.toLowerCase()}`, x.status]));
   const last = S.holdings.reduce((m, x) => (x.updated_at > m ? x.updated_at : m), "");
   $("#last-sync").textContent = last ? `Saldos atualizados ${ago(last)}` : "Ainda não sincronizado";
@@ -432,13 +435,13 @@ function renderPainel() {
   $("#manual-table").innerHTML =
     `<tr>${th("sym", "Ativo")}${th("price", "Preço")}${th("ch", "Dia")}${th("amount", "Quantidade", "hide-sm")}${th("value", "Valor")}${th("pnl", "Resultado", "hide-sm")}</tr>` +
     (mr
-      .map((a) => `<tr class="${a.kind === "b3" ? "click" : ""}" data-b3="${a.kind === "b3" ? esc(a.symbol) : ""}">
+      .map((a) => `<tr class="click" data-mid="${a.id}">
           <td><div class="asset">${icon(a.symbol)}<div><div class="sym">${esc(a.symbol)}</div><div class="nets-small">${esc(a.name || a.local)}</div></div></div></td>
           <td><span class="price">${a.kind === "b3" ? dualBrl(a.px, price) : "—"}</span></td>
           <td><span class="pct ${cls(a.ch)}">${pct(a.ch)}</span></td>
           <td class="hide-sm">${a.kind === "b3" ? qty(Number(a.quantity)) : ""}</td>
           <td>${dualBrl(a.valueBrl)}</td>
-          <td class="hide-sm">${a.pnlBrl != null ? `${dualBrl(a.pnlBrl, money, true)}<div class="nets-small ${cls(a.pnlBrl)}">${a.costBrl ? pct(a.pnlBrl / a.costBrl) : ""}</div>` : ""}</td>
+          <td class="hide-sm">${a.pnlBrl != null ? `${dualBrl(a.pnlBrl, money, true)}<div class="nets-small ${cls(a.pnlBrl)}">${a.costBrl ? pct(a.pnlBrl / a.costBrl) : ""}${a.start_date ? ` · desde ${fmtDate(a.start_date)}` : ""}</div>` : ""}</td>
         </tr>`)
       .join("") || `<tr><td colspan="6" class="empty">${S.manual.length ? "Nenhum ativo com esses filtros." : "Cadastre ações, FIIs e renda fixa em <b>Cadastros</b>."}</td></tr>`);
 
@@ -591,6 +594,8 @@ function showDetailTab(tab) {
   document.querySelectorAll("#d-tabs button").forEach((b) => b.classList.toggle("active", b.dataset.t === tab));
   $("#d-chart").classList.toggle("hidden", tab !== "chart");
   $("#d-movs").classList.toggle("hidden", tab !== "movs");
+  $("#d-evo").classList.toggle("hidden", tab !== "evo");
+  if (tab === "evo") renderEvolution();
 }
 
 // gráfico do patrimônio
@@ -746,6 +751,9 @@ function openAsset(sym, isB3 = false) {
     locale: "br", allow_symbol_change: true, hide_side_toolbar: false, calendar: false, support_host: "https://www.tradingview.com",
   });
   $("#d-tabs").classList.toggle("hidden", isB3);
+  $("#d-tabs").querySelector('[data-t="chart"]').classList.remove("hidden");
+  $("#d-tabs").querySelector('[data-t="evo"]').classList.add("hidden");
+  $("#d-evo").innerHTML = "";
   if (!isB3) renderAssetMovs(sym);
   showDetailTab("chart");
   $("#modal").classList.remove("hidden");
@@ -824,7 +832,8 @@ function renderCadastros() {
     .map((a) => `<div class="item">
         <span class="badge">${kindName[a.kind]}</span>
         <div class="grow"><b>${esc(a.symbol)}</b> <span class="muted small">${esc(a.name || "")}</span>
-          <div class="addr">${a.kind === "b3" ? `${qty(Number(a.quantity))} × ${price(Number(a.avg_price || 0), a.currency)}` : money(a.current_value ?? null, a.currency)}${a.notes ? " · " + esc(a.notes) : ""}</div></div>
+          <div class="addr">${a.kind === "b3" ? `${qty(Number(a.quantity))} × ${price(Number(a.avg_price || 0), a.currency)}` : money(a.current_value ?? null, a.currency)}${a.start_date ? " · desde " + fmtDate(a.start_date) : " · sem data"} · ${opsOf(a.id).length} operação(ões)${a.notes ? " · " + esc(a.notes) : ""}</div></div>
+        <button class="btn small" data-mact="ops" data-id="${a.id}">Operações</button>
         <button class="btn small ghost" data-mact="edit" data-id="${a.id}">Editar</button>
         <button class="btn small ghost danger" data-mact="del" data-id="${a.id}">Excluir</button>
       </div>`)
@@ -947,6 +956,168 @@ async function runHist(btn) {
   }
 }
 
+// ------------------------------------------------------------------ operações de B3 / renda fixa
+const fmtDate = (d) => (d ? new Date(d + "T12:00").toLocaleDateString("pt-BR") : "");
+const daysSince = (d) => Math.max(0, Math.round((Date.now() - new Date(d + "T12:00").getTime()) / 86400e3));
+function opsOf(assetId) {
+  return S.ops.filter((o) => o.asset_id === assetId).sort((a, b) => a.op_date.localeCompare(b.op_date) || a.created_at.localeCompare(b.created_at));
+}
+// custo médio: compras somam (com taxas); vendas tiram pelo preço médio
+function calcPosition(ops, until = null) {
+  let q = 0, cost = 0;
+  for (const o of ops) {
+    if (until && o.op_date > until) break;
+    const n = Number(o.quantity), p = Number(o.price), f = Number(o.fees || 0);
+    if (o.kind === "buy") { cost += n * p + f; q += n; }
+    else if (q > 0) { const sold = Math.min(n, q); cost -= (cost / q) * sold; q -= sold; }
+  }
+  return { q, cost, avg: q > 0 ? cost / q : null };
+}
+async function recalcAsset(assetId) {
+  const ops = opsOf(assetId);
+  if (!ops.length) return;
+  const p = calcPosition(ops);
+  await sb.from("manual_assets").update({ quantity: p.q, avg_price: p.avg, start_date: ops[0].op_date }).eq("id", assetId);
+}
+async function afterOpsChange(assetId) {
+  const { data } = await sb.from("manual_ops").select("*").order("op_date");
+  S.ops = data || [];
+  await recalcAsset(assetId);
+  await loadAll();
+  openManual(assetId, "movs");
+}
+function alertOp(t) {
+  const el = $("#op-msg");
+  if (el) { el.textContent = t; el.className = "msg err"; } else alertMsg(t);
+}
+
+let evoChart = null;
+function openManual(id, tab) {
+  const a = manualRows().find((x) => x.id === id);
+  if (!a) return;
+  const isB3 = a.kind === "b3";
+  const tv = a.tv_symbol || `BMFBOVESPA:${a.symbol.toUpperCase()}`;
+  const ops = opsOf(id);
+  $("#d-title").textContent = `${a.symbol}${a.name ? " · " + a.name : ""}`;
+  $("#d-flag").innerHTML = "";
+  $("#d-form").classList.add("hidden");
+  $("#d-tabs").classList.remove("hidden");
+  $("#d-tabs").querySelector('[data-t="chart"]').classList.toggle("hidden", !isB3);
+  $("#d-tabs").querySelector('[data-t="evo"]').classList.remove("hidden");
+  $("#d-tabs").querySelector('[data-t="movs"]').textContent = `Movimentações (${ops.length})`;
+  const first = ops[0]?.op_date || a.start_date;
+  $("#d-stats").innerHTML = [
+    ...(isB3 ? [["Preço agora", `${price(a.px, "BRL")}<div class="sub2">${price(a.px && rate() ? a.px / rate() : null, "USD")}</div>`], ["Dia", `<span class="${cls(a.ch)}">${pct(a.ch) || "—"}</span>`], ["Quantidade", qty(Number(a.quantity))]] : []),
+    [isB3 ? "Preço médio" : "Valor aplicado", isB3 ? `${price(Number(a.avg_price) || null, "BRL")}` : money(a.costBrl, "BRL")],
+    ["Valor hoje", `${money(a.valueBrl, "BRL")}<div class="sub2">${money(a.valueBrl && rate() ? a.valueBrl / rate() : null, "USD")}</div>`],
+    ["Resultado", a.pnlBrl != null ? `<span class="${cls(a.pnlBrl)}">${money(a.pnlBrl, "BRL")}</span><div class="sub2 ${cls(a.pnlBrl)}">${a.costBrl ? pct(a.pnlBrl / a.costBrl) : ""}</div>` : "—"],
+    ["Desde", first ? `${fmtDate(first)}<div class="sub2">há ${daysSince(first)} dias</div>` : '<span class="muted small">sem data</span>'],
+  ].map(([k, v]) => `<div class="stat"><div class="muted small">${k}</div><div class="v">${v}</div></div>`).join("");
+  $("#d-where").innerHTML = `<p class="muted">${esc(a.notes || "")}</p>${isB3 ? `<a class="btn ghost" href="https://br.tradingview.com/chart/?symbol=${encodeURIComponent(tv)}" target="_blank" rel="noopener">Abrir no TradingView ↗</a>` : ""}`;
+  renderManualOps(a, ops);
+  if (isB3) {
+    tvWidget($("#d-chart"), "advanced-chart", {
+      autosize: true, symbol: tv, interval: "D", timezone: "America/Sao_Paulo", theme: "dark", style: "1",
+      locale: "br", allow_symbol_change: true, hide_side_toolbar: false, calendar: false, support_host: "https://www.tradingview.com",
+    });
+  } else $("#d-chart").innerHTML = "";
+  $("#d-evo").dataset.asset = id;
+  $("#d-evo").dataset.loaded = "";
+  showDetailTab(tab || (ops.length ? (isB3 ? "evo" : "movs") : "movs"));
+  $("#modal").classList.remove("hidden");
+}
+function renderManualOps(a, ops) {
+  const isB3 = a.kind === "b3";
+  const px = isB3 ? a.px : null;
+  const today = new Date().toISOString().slice(0, 10);
+  const noDate = !ops.length && Number(a.quantity) > 0;
+  $("#d-movs").innerHTML = `
+    ${noDate ? `<div class="flagbox warn"><b>Esta posição ainda não tem data.</b> Informe abaixo a data da compra (já preenchi quantidade e preço com o que estava cadastrado) para o app mostrar a evolução desde então.</div>` : ""}
+    <div class="table-wrap"><table class="assets">
+      <tr><th>Data</th><th>Operação</th>${isB3 ? "<th>Quantidade</th><th>Preço</th>" : ""}<th>Total</th>${isB3 ? '<th class="hide-sm">Resultado hoje</th>' : ""}<th></th></tr>
+      ${ops.slice().reverse().map((o) => {
+        const n = Number(o.quantity), p = Number(o.price), tot = n * p + (o.kind === "buy" ? 1 : -1) * Number(o.fees || 0);
+        const res = isB3 && o.kind === "buy" && px ? (px - p) * n : null;
+        return `<tr>
+          <td>${fmtDate(o.op_date)}<div class="nets-small">há ${daysSince(o.op_date)} dias</div></td>
+          <td><span class="${o.kind === "buy" ? "up" : "down"}">${o.kind === "buy" ? (isB3 ? "Compra" : "Aplicação") : (isB3 ? "Venda" : "Resgate")}</span></td>
+          ${isB3 ? `<td>${qty(n)}</td><td>${price(p, "BRL")}</td>` : ""}
+          <td>${money(tot, "BRL")}${o.fees ? `<div class="nets-small">taxas ${money(Number(o.fees), "BRL")}</div>` : ""}</td>
+          ${isB3 ? `<td class="hide-sm">${res != null ? `<span class="${cls(res)}">${money(res, "BRL")}</span><div class="nets-small ${cls(res)}">${pct(res / (n * p))}</div>` : "—"}</td>` : ""}
+          <td><button type="button" class="btn small ghost danger" data-delop="${o.id}" title="Excluir">✕</button></td>
+        </tr>`;
+      }).join("") || `<tr><td colspan="7" class="empty">Nenhuma operação registrada.</td></tr>`}
+    </table></div>
+    <form id="op-form" class="form" data-asset="${a.id}">
+      <h3>${noDate ? "Registrar a compra com data" : "Adicionar operação"}</h3>
+      <div class="row">
+        <label>Operação<select name="kind"><option value="buy">${isB3 ? "Compra" : "Aplicação"}</option><option value="sell">${isB3 ? "Venda" : "Resgate"}</option></select></label>
+        <label>Data<input type="date" name="date" max="${today}" required /></label>
+        ${isB3 ? `<label>Quantidade<input type="number" name="qty" step="any" min="0" value="${noDate ? Number(a.quantity) : ""}" /></label>` : '<input type="hidden" name="qty" value="1" />'}
+        <label>${isB3 ? "Preço por ação (R$)" : "Valor (R$)"}<input type="number" name="price" step="any" min="0" value="${noDate && a.avg_price ? Number(a.avg_price) : ""}" /></label>
+        <label>Taxas (R$)<input type="number" name="fees" step="any" min="0" placeholder="0" /></label>
+      </div>
+      <label>Observação<input name="notes" placeholder="opcional" /></label>
+      <div class="row-btns"><button class="btn primary" type="submit">Salvar operação</button></div>
+      <p id="op-msg" class="msg"></p>
+    </form>`;
+}
+// evolução da posição: valor da posição em cada dia × quanto foi investido
+async function renderEvolution() {
+  const el = $("#d-evo");
+  const a = manualRows().find((x) => x.id === el.dataset.asset);
+  if (!a || el.dataset.loaded) return;
+  el.dataset.loaded = "1";
+  const ops = opsOf(a.id);
+  if (!ops.length) {
+    el.innerHTML = '<p class="muted">Registre a data da compra na aba <b>Movimentações</b> para ver a evolução.</p>';
+    return;
+  }
+  if (a.kind !== "b3") {
+    el.innerHTML = `<p class="muted">Renda fixa não tem cotação diária pública. Aplicado: <b>${money(a.costBrl, "BRL")}</b> desde ${fmtDate(ops[0].op_date)}; valor atual informado: <b>${money(a.valueBrl, "BRL")}</b> (${a.costBrl ? pct(a.pnlBrl / a.costBrl) : "—"}).</p>`;
+    return;
+  }
+  el.innerHTML = '<div class="evo-legend"><span><i style="background:#3987e5"></i>Valor da posição</span><span><i style="background:#d95926"></i>Valor investido</span></div><div id="evo-chart" class="evo-chart"></div><p class="muted small" id="evo-note">Carregando o histórico de preços…</p>';
+  try {
+    const { data, error } = await sb.functions.invoke("quotes", { body: { history: a.symbol, from: ops[0].op_date }, region: REGION });
+    if (error) throw error;
+    const pts = (data.pontos || []).filter((p) => new Date(p.t * 1000).toISOString().slice(0, 10) >= ops[0].op_date);
+    if (!pts.length) throw new Error("sem dados de preço para o período");
+    const value = [], invested = [];
+    for (const p of pts) {
+      const day = new Date(p.t * 1000).toISOString().slice(0, 10);
+      const pos = calcPosition(ops, day);
+      value.push({ time: p.t, value: +(pos.q * p.c).toFixed(2) });
+      invested.push({ time: p.t, value: +pos.cost.toFixed(2) });
+    }
+    if (a.px) {
+      const pos = calcPosition(ops);
+      const now = Math.floor(Date.now() / 1000);
+      if (now > value[value.length - 1].time + 3600) { value.push({ time: now, value: +(pos.q * a.px).toFixed(2) }); invested.push({ time: now, value: +pos.cost.toFixed(2) }); }
+    }
+    evoChart?.remove();
+    evoChart = LightweightCharts.createChart($("#evo-chart"), {
+      layout: { background: { color: "transparent" }, textColor: "#8a9ab0", fontFamily: "Inter" },
+      grid: { vertLines: { visible: false }, horzLines: { color: "#1c2632" } },
+      rightPriceScale: { borderVisible: false }, timeScale: { borderVisible: false },
+      localization: { locale: "pt-BR", priceFormatter: (v) => money(v, "BRL") }, autoSize: true,
+    });
+    const sv = evoChart.addAreaSeries({ lineColor: "#3987e5", topColor: "rgba(57,135,229,.3)", bottomColor: "rgba(57,135,229,0)", lineWidth: 2 });
+    sv.setData(value);
+    evoChart.addLineSeries({ color: "#d95926", lineWidth: 2, lineStyle: 2, lineType: 1 }).setData(invested);
+    sv.setMarkers(ops.map((o) => {
+      const t = Math.floor(new Date(o.op_date + "T12:00").getTime() / 1000);
+      const near = value.reduce((b, v) => (Math.abs(v.time - t) < Math.abs(b.time - t) ? v : b), value[0]);
+      return { time: near.time, position: o.kind === "buy" ? "belowBar" : "aboveBar", color: o.kind === "buy" ? "#16c784" : "#ea3943", shape: o.kind === "buy" ? "arrowUp" : "arrowDown", text: `${o.kind === "buy" ? "Compra" : "Venda"} ${S.hide ? "" : qty(Number(o.quantity))}` };
+    }).sort((x, y) => x.time - y.time));
+    evoChart.timeScale().fitContent();
+    const last = value[value.length - 1].value, inv = invested[invested.length - 1].value;
+    $("#evo-note").innerHTML = `Desde ${fmtDate(ops[0].op_date)}: investido ${money(inv, "BRL")}, vale ${money(last, "BRL")} hoje (<span class="${cls(last - inv)}">${pct(inv ? (last - inv) / inv : null)}</span>). Fechamentos diários da B3 (Yahoo Finance); dividendos não estão incluídos.`;
+  } catch (e) {
+    $("#evo-note").textContent = `Não consegui carregar o histórico: ${e.message}`;
+  }
+}
+
 // ------------------------------------------------------------------ eventos
 function bind() {
   document.querySelectorAll(".tabs button").forEach((b) =>
@@ -1042,8 +1213,31 @@ function bind() {
     if (tr) openAsset(tr.dataset.sym);
   });
   $("#manual-table").addEventListener("click", (e) => {
-    const tr = e.target.closest("tr[data-b3]");
-    if (tr && tr.dataset.b3) openAsset(tr.dataset.b3, true);
+    const tr = e.target.closest("tr[data-mid]");
+    if (tr) openManual(tr.dataset.mid);
+  });
+  $("#d-movs").addEventListener("submit", async (e) => {
+    if (e.target.id !== "op-form") return;
+    e.preventDefault();
+    const f = e.target;
+    const a = S.manual.find((x) => x.id === f.dataset.asset);
+    const isRF = a.kind !== "b3";
+    const row = {
+      asset_id: a.id, kind: f.kind.value, op_date: f.date.value,
+      quantity: isRF ? 1 : Number(f.qty.value), price: Number(f.price.value), fees: Number(f.fees.value || 0), notes: f.notes.value.trim() || null,
+    };
+    if (!row.op_date || !(row.quantity > 0) || !(row.price > 0)) return alertOp("Preencha data, quantidade e preço.");
+    const { error } = await sb.from("manual_ops").insert(row);
+    if (error) return alertOp(error.message);
+    await afterOpsChange(a.id);
+  });
+  $("#d-movs").addEventListener("click", async (e) => {
+    const b = e.target.closest("button[data-delop]");
+    if (!b) return;
+    const o = S.ops.find((x) => x.id === b.dataset.delop);
+    if (!(await confirmBox("Excluir esta operação?"))) return;
+    await sb.from("manual_ops").delete().eq("id", o.id);
+    await afterOpsChange(o.asset_id);
   });
   $("#d-close").addEventListener("click", closeModal);
   $("#spam-note").addEventListener("click", (e) => {
@@ -1130,7 +1324,7 @@ function bind() {
     }
   });
 
-  $("#m-kind").addEventListener("change", () => $("#m-cur-wrap").classList.toggle("hidden", $("#m-kind").value === "b3"));
+  $("#m-kind").addEventListener("change", manualFormLabels);
   $("#manual-form").addEventListener("submit", async (e) => {
     e.preventDefault();
     const num = (id) => ($(id).value === "" ? null : Number($(id).value));
@@ -1146,8 +1340,30 @@ function bind() {
       notes: $("#m-notes").value.trim() || null,
     };
     const id = $("#m-id").value;
-    const { error } = id ? await sb.from("manual_assets").update(row).eq("id", id) : await sb.from("manual_assets").insert(row);
-    if (error) return alertMsg(error.message);
+    if (id) {
+      const { error } = await sb.from("manual_assets").update(row).eq("id", id);
+      if (error) return alertMsg(error.message);
+    } else {
+      // nova compra/aplicação: cria o ativo (se ainda não existe) e a operação com data
+      const date = $("#m-date").value;
+      if (!date) return alertMsg("Informe a data da compra/aplicação.");
+      if (!(row.avg_price > 0)) return alertMsg(kind === "b3" ? "Informe o preço pago por ação." : "Informe o valor aplicado.");
+      const qtyOp = kind === "b3" ? row.quantity : 1;
+      if (!(qtyOp > 0)) return alertMsg("Informe a quantidade.");
+      let asset = S.manual.find((x) => x.kind === kind && x.symbol.toUpperCase() === row.symbol);
+      if (!asset) {
+        const { data, error } = await sb.from("manual_assets").insert({ ...row, quantity: 0, avg_price: null }).select().single();
+        if (error) return alertMsg(error.message);
+        asset = data;
+        S.manual.push(asset);
+      }
+      const { error: e2 } = await sb.from("manual_ops").insert({ asset_id: asset.id, kind: $("#m-op").value, op_date: date, quantity: qtyOp, price: row.avg_price, fees: num("#m-fees") ?? 0 });
+      if (e2) return alertMsg(e2.message);
+      if (kind !== "b3" && row.current_value != null) await sb.from("manual_assets").update({ current_value: row.current_value }).eq("id", asset.id);
+      const { data: ops } = await sb.from("manual_ops").select("*").order("op_date");
+      S.ops = ops || [];
+      await recalcAsset(asset.id);
+    }
     resetManualForm();
     await loadAll();
   });
@@ -1156,6 +1372,7 @@ function bind() {
     const b = e.target.closest("button[data-mact]");
     if (!b) return;
     const a = S.manual.find((x) => x.id === b.dataset.id);
+    if (b.dataset.mact === "ops") return openManual(a.id, "movs");
     if (b.dataset.mact === "del") {
       if (!(await confirmBox(`Excluir ${a.symbol}?`))) return;
       await sb.from("manual_assets").delete().eq("id", a.id);
@@ -1172,19 +1389,34 @@ function bind() {
     $("#m-notes").value = a.notes || "";
     $("#m-title").textContent = `Editar ${a.symbol}`;
     $("#m-cancel").classList.remove("hidden");
-    $("#m-cur-wrap").classList.toggle("hidden", a.kind === "b3");
+    manualFormLabels();
     $("#manual-form").scrollIntoView({ behavior: "smooth" });
   });
+}
+function manualFormLabels() {
+  const k = $("#m-kind").value, editing = !!$("#m-id").value;
+  $("#m-qty-wrap").classList.toggle("hidden", k !== "b3");
+  $("#m-avg-label").textContent = k === "b3" ? (editing ? "Preço médio" : "Preço por ação") : (editing ? "Valor aplicado" : "Valor aplicado");
+  $("#m-cur-wrap").classList.toggle("hidden", k === "b3");
+  $("#m-op-wrap").classList.toggle("hidden", editing);
+  $("#m-date-wrap").classList.toggle("hidden", editing);
+  $("#m-fees-wrap").classList.toggle("hidden", editing);
+  $("#m-op").options[0].text = k === "b3" ? "Compra" : "Aplicação";
+  $("#m-op").options[1].text = k === "b3" ? "Venda" : "Resgate";
 }
 function resetManualForm() {
   $("#manual-form").reset();
   $("#m-id").value = "";
-  $("#m-title").textContent = "Adicionar ativo";
+  $("#m-title").textContent = "Adicionar compra ou aplicação";
   $("#m-cancel").classList.add("hidden");
-  $("#m-cur-wrap").classList.add("hidden");
+  $("#m-date").value = new Date().toISOString().slice(0, 10);
+  manualFormLabels();
 }
 function closeModal() {
   $("#modal").classList.add("hidden");
+  evoChart?.remove();
+  evoChart = null;
+  $("#d-evo").innerHTML = "";
   $("#d-chart").innerHTML = "";
 }
 // avisos dentro da página (alert/confirm do navegador podem ser bloqueados)
@@ -1216,7 +1448,7 @@ const EYE_OFF = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" str
 async function start() {
   bind();
   renderWalletForm();
-  $("#m-cur-wrap").classList.add("hidden");
+  resetManualForm();
   const { data } = await sb.auth.getSession();
   if (data.session) return enter(data.session.user);
   $("#login").classList.remove("hidden");

@@ -216,3 +216,9 @@ html, body { overflow-x: hidden; }
 /* Nome do local abreviado (mouse em cima mostra todos) */
 .asset > div { min-width: 0; }
 .nets-small.locs { max-width: 240px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: help; }
+
+/* Evolução da posição (B3) */
+.evo-chart { height: 360px; }
+.evo-legend { display: flex; gap: 16px; font-size: 12px; color: var(--muted); margin-bottom: 6px; }
+.evo-legend i { display: inline-block; width: 12px; height: 3px; border-radius: 2px; margin-right: 6px; vertical-align: middle; }
+#op-form { margin-top: 14px; }

@@ -8,7 +8,7 @@
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%2310b981'/><path d='M8 21l5-6 4 3 7-8' stroke='white' stroke-width='3' fill='none' stroke-linecap='round' stroke-linejoin='round'/></svg>" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="style.css?v=10" />
+  <link rel="stylesheet" href="style.css?v=11" />
 </head>
 <body>
   <!-- Login -->
@@ -180,7 +180,7 @@
         <div class="card-head"><h2>B3, renda fixa e outros</h2></div>
         <div id="manual-list" class="list"></div>
         <form id="manual-form" class="form">
-          <h3 id="m-title">Adicionar ativo</h3>
+          <h3 id="m-title">Adicionar compra ou aplicação</h3>
           <input type="hidden" id="m-id" />
           <div class="row">
             <label>Tipo
@@ -194,8 +194,11 @@
             <label>Descrição<input id="m-name" placeholder="Petrobras PN" /></label>
           </div>
           <div class="row">
-            <label>Quantidade<input id="m-qty" type="number" step="any" min="0" value="0" /></label>
-            <label>Preço médio<input id="m-avg" type="number" step="any" min="0" /></label>
+            <label id="m-op-wrap">Operação<select id="m-op"><option value="buy">Compra</option><option value="sell">Venda</option></select></label>
+            <label id="m-date-wrap">Data<input id="m-date" type="date" /></label>
+            <label id="m-qty-wrap">Quantidade<input id="m-qty" type="number" step="any" min="0" value="0" /></label>
+            <label><span id="m-avg-label">Preço por ação</span><input id="m-avg" type="number" step="any" min="0" /></label>
+            <label id="m-fees-wrap">Taxas (R$)<input id="m-fees" type="number" step="any" min="0" placeholder="0" /></label>
             <label>Moeda<select id="m-ccy"><option>BRL</option><option>USD</option></select></label>
             <label id="m-cur-wrap">Valor atual<input id="m-cur" type="number" step="any" min="0" placeholder="para renda fixa" /></label>
           </div>
@@ -228,9 +231,10 @@
       </div>
       <div class="d-stats" id="d-stats"></div>
       <div id="d-flag"></div>
-      <div class="seg" id="d-tabs"><button data-t="chart" class="active">Gráfico</button><button data-t="movs">Movimentações</button></div>
+      <div class="seg" id="d-tabs"><button data-t="chart" class="active">Gráfico</button><button data-t="evo" class="hidden">Evolução da posição</button><button data-t="movs">Movimentações</button></div>
       <div id="d-chart" class="tv-chart"></div>
       <div id="d-movs" class="hidden"></div>
+      <div id="d-evo" class="hidden"></div>
       <div class="d-cols">
         <div>
           <h3>Onde está</h3>
@@ -255,6 +259,6 @@
   </div>
 
   <script src="https://unpkg.com/lightweight-charts@4.2.3/dist/lightweight-charts.standalone.production.js"></script>
-  <script type="module" src="app.js?v=9"></script>
+  <script type="module" src="app.js?v=10"></script>
 </body>
 </html>
