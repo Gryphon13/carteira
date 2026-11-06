@@ -79,6 +79,14 @@
         <p class="muted small" id="chart-empty">O gráfico vai se formando com as fotos diárias (uma por dia, automática, e uma a cada atualização manual).</p>
       </section>
 
+      <section class="card">
+        <div class="card-head">
+          <h2>Composição da carteira</h2>
+          <div class="seg small" id="pie-mode"><button data-m="ativo">Por ativo</button><button data-m="local">Por onde está</button></div>
+        </div>
+        <div class="pie-wrap"><div id="pie"></div><div id="pie-legend" class="pie-legend"></div></div>
+      </section>
+
       <section class="card filters-card">
         <div class="card-head">
           <h2>Filtros</h2>
@@ -218,7 +226,9 @@
         <button class="btn ghost small" id="d-close">Fechar</button>
       </div>
       <div class="d-stats" id="d-stats"></div>
+      <div class="seg" id="d-tabs"><button data-t="chart" class="active">Gráfico</button><button data-t="movs">Movimentações</button></div>
       <div id="d-chart" class="tv-chart"></div>
+      <div id="d-movs" class="hidden"></div>
       <div class="d-cols">
         <div>
           <h3>Onde está</h3>

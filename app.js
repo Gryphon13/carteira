@@ -24,6 +24,7 @@ const S = {
   range: 365,
   prefs: {},
   cb: {},
+  pieMode: store("pie") || "ativo",
   hide: store("hide") === "1",
   filters: loadFilters(),
   sort: { k: "value", d: -1 },
@@ -278,6 +279,7 @@ async function loadQuotes() {
     console.warn("cotações", e);
   }
   renderFx();
+  if (S.user && S.holdings) renderPie();
 }
 
 // ------------------------------------------------------------------ preços ao vivo (Binance)
@@ -326,6 +328,7 @@ function renderAll() {
   renderCadastros();
   renderTape();
   renderWatchlist();
+  renderPie();
 }
 
 function renderFx() {
@@ -439,6 +442,123 @@ function renderFilters() {
   if (document.activeElement !== $("#f-minq")) $("#f-minq").value = f.minq;
   $("#show-spam").checked = !!f.spam;
   $("#f-min-label").textContent = `Valor mínimo (${S.ccy === "BRL" ? "R$" : "US$"})`;
+}
+
+// composição da carteira (pizza): 7 maiores + "Outros"
+const PIE = ["#3987e5", "#d95926", "#199e70", "#c98500", "#d55181", "#008300", "#9085e9"];
+const PIE_OTHER = "#5b6675";
+function pieData() {
+  const r = rate();
+  if (!r) return [];
+  const m = new Map();
+  const addTo = (k, brl) => brl > 0 && m.set(k, (m.get(k) || 0) + brl);
+  if (S.pieMode === "ativo") {
+    for (const c of cryptoRows()) if (!c.hidden) addTo(c.sym, (c.value || 0) * r);
+    for (const a of manualRows()) addTo(a.symbol, a.valueBrl || 0);
+  } else {
+    for (const h of S.holdings) {
+      if (S.settings[h.symbol]?.hidden) continue;
+      const p = livePrice(h.symbol, h.price_usd != null ? Number(h.price_usd) : null);
+      if (p != null) addTo(h.source, p * Number(h.amount) * r);
+    }
+    for (const a of manualRows()) addTo(a.local, a.valueBrl || 0);
+  }
+  const all = [...m.entries()].map(([name, brl]) => ({ name, brl })).sort((a, b) => b.brl - a.brl);
+  const top = all.slice(0, 7).map((x, i) => ({ ...x, color: PIE[i] }));
+  const rest = all.slice(7);
+  if (rest.length) top.push({ name: `Outros (${rest.length})`, brl: rest.reduce((s, x) => s + x.brl, 0), color: PIE_OTHER, other: rest.map((x) => x.name) });
+  return top;
+}
+function renderPie() {
+  const data = pieData();
+  const total = data.reduce((s, d) => s + d.brl, 0);
+  document.querySelectorAll("#pie-mode button").forEach((b) => b.classList.toggle("active", b.dataset.m === S.pieMode));
+  if (!total) {
+    $("#pie").innerHTML = "";
+    $("#pie-legend").innerHTML = '<p class="muted">Sem dados ainda.</p>';
+    return;
+  }
+  const R = 100, r0 = 64, C = 110;
+  const pt = (a, rad) => [C + rad * Math.sin(a), C - rad * Math.cos(a)];
+  let a = 0;
+  const paths = data.map((d, i) => {
+    const frac = d.brl / total;
+    const a1 = a + frac * Math.PI * 2;
+    let path;
+    if (frac > 0.9999) {
+      path = `M ${C} ${C - R} A ${R} ${R} 0 1 1 ${C - 0.01} ${C - R} Z M ${C} ${C - r0} A ${r0} ${r0} 0 1 0 ${C - 0.01} ${C - r0} Z`;
+    } else {
+      const big = a1 - a > Math.PI ? 1 : 0;
+      const [x0, y0] = pt(a, R), [x1, y1] = pt(a1, R), [x2, y2] = pt(a1, r0), [x3, y3] = pt(a, r0);
+      path = `M ${x0} ${y0} A ${R} ${R} 0 ${big} 1 ${x1} ${y1} L ${x2} ${y2} A ${r0} ${r0} 0 ${big} 0 ${x3} ${y3} Z`;
+    }
+    a = a1;
+    const tip = `${d.name}: ${(frac * 100).toFixed(1).replace(".", ",")}%${S.hide ? "" : " · " + money(S.ccy === "BRL" ? d.brl : d.brl / rate())}${d.other ? "\n" + d.other.join(", ") : ""}`;
+    return `<path data-i="${i}" d="${path}" fill="${d.color}" stroke="var(--panel)" stroke-width="2" fill-rule="evenodd"><title>${esc(tip)}</title></path>`;
+  });
+  const mainTotal = S.ccy === "BRL" ? total : total / rate();
+  $("#pie").innerHTML = `<svg viewBox="0 0 220 220" role="img" aria-label="Composição da carteira">${paths.join("")}
+    <text x="110" y="108" text-anchor="middle" class="pie-center-v">${esc(money(mainTotal))}</text>
+    <text x="110" y="126" text-anchor="middle" class="pie-center-l">${S.pieMode === "ativo" ? "por ativo" : "por onde está"}</text></svg>`;
+  $("#pie-legend").innerHTML = data
+    .map((d, i) => `<div class="pl-row" data-i="${i}" title="${esc(d.other ? d.other.join(", ") : d.name)}"><i style="background:${d.color}"></i><span>${esc(d.name)}</span><span class="pc">${((d.brl / total) * 100).toFixed(1).replace(".", ",")}%</span><span class="vv">${dualBrl(d.brl)}</span></div>`)
+    .join("");
+}
+function pieHover(i) {
+  $("#pie").classList.toggle("hovering", i != null);
+  document.querySelectorAll("#pie path").forEach((p) => p.classList.toggle("on", p.dataset.i === String(i)));
+  document.querySelectorAll(".pl-row").forEach((p) => p.classList.toggle("on", p.dataset.i === String(i)));
+}
+
+// movimentações de um ativo (inclui quando ele foi usado para pagar outra compra)
+function assetMovs(sym) {
+  const out = [];
+  for (const t of S.txs) {
+    const base = (t.symbol || "").toUpperCase(), quote = (t.quote_asset || "").toUpperCase();
+    if (base === sym) {
+      out.push({ t, dir: t.direction, amount: Number(t.amount), unit: t.quote_amount && t.amount ? Number(t.quote_amount) / Number(t.amount) : null, unitAsset: quote || null, total: t.quote_amount != null ? Number(t.quote_amount) : null, desc: t.quote_asset ? t.counterparty : t.counterparty });
+    } else if (quote === sym && (t.direction === "buy" || t.direction === "sell")) {
+      out.push({ t, dir: t.direction === "buy" ? "sell" : "buy", amount: Number(t.quote_amount), unit: Number(t.amount) / Number(t.quote_amount), unitAsset: base, total: Number(t.amount), desc: t.direction === "buy" ? `usado para comprar ${base}` : `recebido pela venda de ${base}` , swapped: true });
+    }
+  }
+  return out;
+}
+function unitFmt(v, asset) {
+  if (v == null || !isFinite(v)) return "—";
+  if (STABLE.has(asset)) return price(v, "USD");
+  if (asset === "BRL") return price(v, "BRL");
+  return `${new Intl.NumberFormat("pt-BR", { maximumSignificantDigits: 6 }).format(v)} ${asset}`;
+}
+function renderAssetMovs(sym) {
+  const list = assetMovs(sym);
+  const dname = { in: "Entrada", out: "Saída", self: "Interna", trade: "Troca", buy: "Compra", sell: "Venda" };
+  const sum = (d) => list.filter((x) => x.dir === d).reduce((s, x) => s + (x.amount || 0), 0);
+  const cnt = (d) => list.filter((x) => x.dir === d).length;
+  $("#d-tabs").querySelector('[data-t="movs"]').textContent = `Movimentações (${list.length})`;
+  $("#d-movs").innerHTML = `
+    <div class="d-sum">
+      <div class="stat"><div class="muted small">Comprado (${cnt("buy")})</div><div class="v up">${qty(sum("buy"))}</div></div>
+      <div class="stat"><div class="muted small">Vendido / usado (${cnt("sell")})</div><div class="v down">${qty(sum("sell"))}</div></div>
+      <div class="stat"><div class="muted small">Entradas (${cnt("in")})</div><div class="v">${qty(sum("in"))}</div></div>
+      <div class="stat"><div class="muted small">Saídas (${cnt("out")})</div><div class="v">${qty(sum("out"))}</div></div>
+    </div>
+    <div class="table-wrap"><table class="assets">
+      <tr><th>Data</th><th>Tipo</th><th>Quantidade</th><th>Preço unitário</th><th class="hide-sm">Total</th><th class="hide-sm">Onde / detalhe</th><th></th></tr>
+      ${list.map((x) => `<tr>
+        <td>${x.t.ts ? new Date(x.t.ts).toLocaleString("pt-BR", { dateStyle: "short", timeStyle: "short" }) : "—"}</td>
+        <td><span class="${x.dir === "buy" || x.dir === "in" ? "up" : x.dir === "sell" || x.dir === "out" ? "down" : ""}">${dname[x.dir] || x.dir}</span></td>
+        <td>${qty(x.amount)}</td>
+        <td>${x.unitAsset ? unitFmt(x.unit, x.unitAsset) : "—"}</td>
+        <td class="hide-sm">${x.total != null && x.unitAsset ? (S.hide ? MASK : unitFmt(x.total, x.unitAsset)) : "—"}</td>
+        <td class="hide-sm"><span class="nets-small cp">${esc(x.t.source)} · ${esc(x.swapped ? x.desc : (x.t.counterparty || NET[x.t.network] || ""))}</span></td>
+        <td>${x.t.url ? `<a href="${esc(x.t.url)}" target="_blank" rel="noopener">ver ↗</a>` : ""}</td>
+      </tr>`).join("") || '<tr><td colspan="7" class="empty">Nenhuma movimentação registrada para este ativo.</td></tr>'}
+    </table></div>`;
+}
+function showDetailTab(tab) {
+  document.querySelectorAll("#d-tabs button").forEach((b) => b.classList.toggle("active", b.dataset.t === tab));
+  $("#d-chart").classList.toggle("hidden", tab !== "chart");
+  $("#d-movs").classList.toggle("hidden", tab !== "movs");
 }
 
 // gráfico do patrimônio
@@ -582,6 +702,9 @@ function openAsset(sym, isB3 = false) {
     autosize: true, symbol: tv, interval: "240", timezone: "America/Sao_Paulo", theme: "dark", style: "1",
     locale: "br", allow_symbol_change: true, hide_side_toolbar: false, calendar: false, support_host: "https://www.tradingview.com",
   });
+  $("#d-tabs").classList.toggle("hidden", isB3);
+  if (!isB3) renderAssetMovs(sym);
+  showDetailTab("chart");
   $("#modal").classList.remove("hidden");
 }
 
@@ -880,6 +1003,21 @@ function bind() {
     if (tr && tr.dataset.b3) openAsset(tr.dataset.b3, true);
   });
   $("#d-close").addEventListener("click", closeModal);
+  $("#d-tabs").addEventListener("click", (e) => {
+    const b = e.target.closest("button[data-t]");
+    if (b) showDetailTab(b.dataset.t);
+  });
+  $("#pie-mode").addEventListener("click", (e) => {
+    const b = e.target.closest("button[data-m]");
+    if (!b) return;
+    S.pieMode = b.dataset.m;
+    store("pie", S.pieMode);
+    renderPie();
+  });
+  $("#pie").addEventListener("mouseover", (e) => { const p = e.target.closest("path"); pieHover(p ? p.dataset.i : null); });
+  $("#pie").addEventListener("mouseleave", () => pieHover(null));
+  $("#pie-legend").addEventListener("mouseover", (e) => { const r = e.target.closest(".pl-row"); pieHover(r ? r.dataset.i : null); });
+  $("#pie-legend").addEventListener("mouseleave", () => pieHover(null));
   $("#modal").addEventListener("click", (e) => e.target.id === "modal" && closeModal());
   document.addEventListener("keydown", (e) => e.key === "Escape" && closeModal());
   $("#d-form").addEventListener("submit", async (e) => {
