@@ -13,7 +13,7 @@
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%23f5a524'/><path d='M8 21l5-6 4 3 7-8' stroke='white' stroke-width='3' fill='none' stroke-linecap='round' stroke-linejoin='round'/></svg>" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="style.css?v=17" />
+  <link rel="stylesheet" href="style.css?v=18" />
 </head>
 <body>
   <!-- Login -->
@@ -39,6 +39,7 @@
         <button data-tab="painel" class="active">Painel</button>
         <button data-tab="movs">Movimentações</button>
         <button data-tab="futuros">Futuros</button>
+        <button data-tab="ir">Imposto de Renda</button>
         <button data-tab="cadastros">Cadastros</button>
       </nav>
       <div class="top-right">
@@ -194,6 +195,39 @@
       </section>
     </main>
 
+    <main id="tab-ir" class="tab hidden">
+      <section class="card">
+        <div class="card-head">
+          <h2>Imposto de Renda — criptoativos</h2>
+          <div class="chart-tools">
+            <label class="inline">Ano-calendário <select id="ir-year"></select></label>
+          </div>
+        </div>
+        <div id="ir-intro"></div>
+      </section>
+      <section class="card">
+        <div class="card-head"><h2>Onde estão suas criptos (para o IR)</h2><span class="muted small">muda o tratamento das vendas</span></div>
+        <div id="ir-regimes" class="ir-regimes"></div>
+      </section>
+      <section class="card">
+        <div class="card-head"><h2>1. Bens e Direitos — grupo 08 (Criptoativos)</h2><span class="muted small" id="ir-bens-sum"></span></div>
+        <div class="table-wrap"><table class="assets" id="ir-bens"></table></div>
+        <div id="ir-bens-note" class="muted small"></div>
+      </section>
+      <section class="card">
+        <div class="card-head"><h2>2. Vendas e trocas (ganho de capital)</h2><span class="muted small" id="ir-gain-sum"></span></div>
+        <div id="ir-gains"></div>
+      </section>
+      <section class="card">
+        <div class="card-head"><h2>3. Outros pontos do ano</h2></div>
+        <div id="ir-other"></div>
+      </section>
+      <section class="card">
+        <div class="card-head"><h2>Passo a passo no Meu Imposto de Renda (gov.br)</h2></div>
+        <div id="ir-steps"></div>
+      </section>
+    </main>
+
     <main id="tab-cadastros" class="tab hidden">
       <section class="card">
         <div class="card-head"><h2>Carteiras e corretoras</h2></div>
@@ -328,6 +362,6 @@
   </div>
 
   <script src="https://unpkg.com/lightweight-charts@4.2.3/dist/lightweight-charts.standalone.production.js"></script>
-  <script type="module" src="app.js?v=28"></script>
+  <script type="module" src="app.js?v=29"></script>
 </body>
 </html>

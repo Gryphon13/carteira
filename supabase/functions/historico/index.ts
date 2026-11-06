@@ -249,9 +249,28 @@ async function run(userId: string) {
     ...renameEv.map((r) => ({ ts: r.ts, kind: "rename" as const, x: r })),
     ...cdc.map((m) => ({ ts: m.ts, kind: "cdc" as const, x: m })),
   ].sort((a, b) => new Date(a.ts).getTime() - new Date(b.ts).getTime());
+  // ganho de capital: cada alienação (venda ou troca por outra cripto) com o custo médio da época
+  const gains: any[] = [];
+  const isCashQ = (q: string) => STABLE.has(q) || q === "BRL" || q === "USD";
+  const realize = (sym: string, q: number, procBrl: number, ts: string, venue: string, kind: string, counter: string | null) => {
+    if (isCashQ(sym) || !(q > 0)) return;
+    const p = pos.get(sym);
+    const f = p && p.qty > 0 ? Math.min(q, p.qty) / p.qty : 0;
+    gains.push({ user_id: userId, ts, symbol: sym, qty: q, proceeds_brl: procBrl || 0, cost_brl: p ? p.brl * f : 0, venue, kind, counter });
+  };
+  // posição de cada ativo em 31/12 de cada ano (horário de Brasília)
+  const BRT = 3 * 3600_000;
+  const yearRows: any[] = [];
+  let curYear: number | null = null;
+  const snap = (y: number) => {
+    for (const [symbol, p] of pos) if (p.qty > 1e-12) yearRows.push({ user_id: userId, year: y, symbol, qty: p.qty, cost_usd: p.usd, cost_brl: p.brl });
+  };
   const txRows: any[] = [];
   for (const ev of events) {
     const ts = new Date(ev.ts).getTime();
+    const y = new Date(ts - BRT).getUTCFullYear();
+    if (curYear == null) curYear = y;
+    while (y > curYear) { snap(curYear); curYear++; }
     if (ev.kind === "rename") { rename(ev.x.from, ev.x.fromQty, ev.x.to, ev.x.toQty, ev.ts); continue; }
     if (ev.kind === "cdc") {
       const m = ev.x, a = Number(m.amount), q = m.quote_asset || null, qa = Number(m.quote_amount || 0);
@@ -260,9 +279,12 @@ async function run(userId: string) {
       if (m.direction === "buy") {
         let usd = await usdOfQuote();
         if (usd == null) { const px = await usdAt(m.symbol, ts); usd = px ? px * a : 0; }
+        if (q && !isCashQ(q)) realize(q, qa, usd * fx, m.ts, "cryptocom", "permuta", m.symbol);
         add(m.symbol, a, usd, q === "BRL" ? qa : usd * fx, m.ts);
         if (q && q !== "USD") sub(q, qa, m.ts);
       } else if (m.direction === "sell") {
+        const pu = await usdOfQuote();
+        realize(m.symbol, a, q === "BRL" ? qa : (pu || 0) * fx, m.ts, "cryptocom", q && !isCashQ(q) ? "permuta" : "venda", q);
         sub(m.symbol, a, m.ts);
         if (q && q !== "USD" && q !== "BRL") { const u = await usdOfQuote(); add(q, qa, u || 0, (u || 0) * fx, m.ts); }
       } else if (m.direction === "in") {
@@ -295,6 +317,8 @@ async function run(userId: string) {
       txRows.push({ user_id: userId, wallet_id: null, source: "Binance", network: "binance", tx_hash: t.id, ts: t.ts, direction: "buy", symbol: t.base, amount: bq, quote_asset: t.quote, quote_amount: qq, counterparty: `Troca de token ${t.quote} → ${t.base}`, url: null });
       continue;
     }
+    if (t.is_buy) { if (!isCashQ(t.quote)) realize(t.quote, qq, brl, t.ts, "binance", "permuta", t.base); }
+    else realize(t.base, bq, brl, t.ts, "binance", isCashQ(t.quote) ? "venda" : "permuta", t.quote);
     const feeBase = t.kind !== "csv" && t.fee_asset === t.base ? Number(t.fee || 0) : 0;
     const feeQuote = t.kind !== "csv" && t.fee_asset === t.quote ? Number(t.fee || 0) : 0;
     if (t.is_buy) {
@@ -324,6 +348,14 @@ async function run(userId: string) {
   }));
   await admin.from("cost_basis").delete().eq("user_id", userId);
   if (cb.length) await admin.from("cost_basis").insert(cb);
+  // fotos de fim de ano (o ano atual fica com a posição de agora) e ganhos realizados
+  const nowY = new Date(Date.now() - BRT).getUTCFullYear();
+  if (curYear != null) while (curYear <= nowY) { snap(curYear); curYear++; }
+  await admin.from("cost_basis_year").delete().eq("user_id", userId);
+  for (let i = 0; i < yearRows.length; i += 500) await admin.from("cost_basis_year").insert(yearRows.slice(i, i + 500));
+  await admin.from("realized_gains").delete().eq("user_id", userId);
+  for (let i = 0; i < gains.length; i += 500) await admin.from("realized_gains").insert(gains.slice(i, i + 500));
+  rep.alienacoes = gains.length;
   rep.operacoes = trades?.length ?? 0;
   rep.ativos_com_preco_medio = cb.length;
   rep.ms = Date.now() - t0;

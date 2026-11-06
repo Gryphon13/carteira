@@ -903,6 +903,7 @@ async function computeHistory() {
     const add = (t, x, v) => { if (!syms.has(x) || isFwd(t.network, x)) return; const k = bucket(t.network, t.wallet_id, x); bal.set(k, (bal.get(k) || 0) + v); };
     let idx = 0;
     const pts = [];
+    const yearEnd = new Map();
     const lastB3 = {};
     const days = [];
     for (let d = first; d <= today; d += DAY) days.push(d);
@@ -977,11 +978,22 @@ async function computeHistory() {
       brl += extra;
       usd += fx ? extra / fx : 0;
       pts.push({ time: d / 1000, usd, brl });
+      // quantidade de cada ativo em cada lugar no fim do ano (e hoje), para a aba Imposto de Renda
+      const dd = new Date(d);
+      if (di === days.length - 1 || (dd.getUTCMonth() === 11 && dd.getUTCDate() === 31)) {
+        const yr = di === days.length - 1 ? dd.getUTCFullYear() : dd.getUTCFullYear();
+        const snapRows = [];
+        for (const [k, q] of bal) if (q > 1e-9 && !(firstOf.has(k) && d + DAY <= firstOf.get(k))) snapRows.push({ k, sym: symOf(k), qty: q });
+        for (const [k, arr] of fwd) if (arr[di] > 1e-9) snapRows.push({ k, sym: symOf(k), qty: arr[di] });
+        if (!yearEnd.has(yr)) yearEnd.set(yr, snapRows);
+      }
     }
     pts.reverse();
     // descarta o começo em que ainda não havia nada
     while (pts.length > 2 && pts[0].brl < 1) pts.shift();
     S.hist = pts;
+    S.yearEnd = yearEnd;
+    if (!$("#tab-ir").classList.contains("hidden")) renderIR();
     const nowVal = Object.fromEntries(cryptoRows().map((r) => [r.sym, r.value || 0]));
     const semPreco = toFetch.filter((x) => !K[x] && nowVal[x] > 1);
     if (window.__S) window.__hist = { bal, firstOf, K };
@@ -1390,6 +1402,213 @@ async function renderFutures() {
   for (const r of res) { run += r.v; byDay.set(Math.floor(r.ms / DAY) * DAY / 1000, run); }
   futChart.series.setData([...byDay].map(([time, value]) => ({ time, value })));
   futChart.timeScale().fitContent();
+}
+
+// ------------------------------------------------------------------ aba Imposto de Renda
+const IR_LINKS = {
+  pr: "https://www.gov.br/receitafederal/pt-br/centrais-de-conteudo/publicacoes/perguntas-e-respostas/dirpf",
+  meu: "https://www.gov.br/receitafederal/pt-br/assuntos/meu-imposto-de-renda",
+  faq: "https://www.gov.br/receitafederal/pt-br/acesso-a-informacao/perguntas-frequentes/imposto-de-renda/dirpf",
+};
+// stablecoins (inclui versões "pontes", ex.: ARBUSDCE = USDC.e da Arbitrum)
+const isStableLike = (sym) => STABLE.has(sym) || /^(.*USDC(E)?|.*USDT|BUSD|DAI|TUSD|FDUSD)$/.test(sym);
+const irCode = (sym) => (sym === "BTC" ? ["01", "Bitcoin (BTC)"] : isStableLike(sym) ? ["03", "Stablecoins"] : ["02", "Outras criptomoedas (altcoins)"]);
+function irRegimes() {
+  let r = {};
+  try { r = JSON.parse(store("ir.regime") || "{}"); } catch { /* */ }
+  return { binance: "exterior", cryptocom: "exterior", self: "brasil", ...r };
+}
+const brlFmt = (v) => (v == null || !isFinite(v) ? "—" : v.toLocaleString("pt-BR", { style: "currency", currency: "BRL" }));
+const qtyFmt = (v) => Number(v).toLocaleString("pt-BR", { maximumFractionDigits: 8 });
+function irPlace(k) {
+  if (k.startsWith("binance|")) return { place: "binance", id: "binance", label: "Binance" };
+  const [wid, net] = k.split("|");
+  const w = S.wallets.find((x) => x.id === wid);
+  if (w?.kind === "cryptocom") return { place: "cryptocom", id: "cryptocom", label: "Crypto.com" };
+  return { place: "self", id: wid, label: w ? w.label : "Carteira", net: NET[net] || net };
+}
+let irLoaded = false;
+async function renderIR() {
+  if (!irLoaded) {
+    $("#ir-intro").innerHTML = '<p class="muted">Carregando…</p>';
+    const [cy, rg] = await Promise.all([
+      allRows(() => sb.from("cost_basis_year").select("year,symbol,qty,cost_brl").order("year").order("symbol")),
+      allRows(() => sb.from("realized_gains").select("ts,symbol,qty,proceeds_brl,cost_brl,venue,kind,counter").order("ts").order("id")),
+    ]);
+    S.irCB = cy.data || [];
+    S.irGains = rg.data || [];
+    irLoaded = true;
+  }
+  const nowY = new Date().getFullYear();
+  const years = [...new Set([...(S.irCB || []).map((r) => r.year), ...(S.yearEnd ? [...S.yearEnd.keys()] : [])])].filter((y) => y <= nowY).sort((a, b) => b - a);
+  const sel = $("#ir-year");
+  if (!sel.options.length) {
+    sel.innerHTML = years.map((y) => `<option value="${y}">${y}${y === nowY ? " (em andamento)" : ""} — IRPF ${y + 1}</option>`).join("");
+    sel.value = String(years.includes(nowY - 1) ? nowY - 1 : years[0]);
+  }
+  const Y = Number(sel.value);
+  const reg = irRegimes();
+  const regOf = (venue) => (Y < 2024 ? "brasil" : reg[venue] || "exterior");
+
+  $("#ir-intro").innerHTML = `
+    <p>Esta aba monta, a partir do seu histórico, <b>o que lançar na declaração do ano-calendário ${Y}</b> (IRPF ${Y + 1}). Os valores de <b>Bens e Direitos</b> são pelo <b>custo de aquisição</b> (preço médio pago em reais), nunca pelo valor de mercado.</p>
+    <ul class="ir-list">
+      <li>É obrigatório informar cada criptoativo cujo custo de aquisição em 31/12 seja de <b>R$ 5.000 ou mais</b>; abaixo disso é opcional (mas ajuda a manter o histórico).</li>
+      <li>Códigos do grupo 08: <b>01</b> Bitcoin, <b>02</b> outras criptomoedas (altcoins), <b>03</b> stablecoins, <b>10</b> NFTs, <b>99</b> outros.</li>
+      <li>Vendas e trocas: em corretora no Brasil (e carteira própria), vendas de até <b>R$ 35 mil no mês</b> (somando todas as criptos) são isentas; acima disso, 15% sobre o lucro, com DARF até o último dia útil do mês seguinte. Em corretora no exterior (Lei 14.754/2023, desde 2024), o lucro é tributado a 15% no ajuste anual, sem a faixa de isenção.</li>
+      <li>O <b>Meu Imposto de Renda</b> não importa arquivos de outros apps: os itens são digitados (ou vêm da declaração pré-preenchida, com o que corretoras brasileiras informaram). Use os botões <b>Copiar</b> abaixo para colar a discriminação.</li>
+    </ul>
+    <p class="muted small">Isto é um apoio para organizar os números, não uma consultoria. Regras mudam e alguns pontos (como Binance ser tratada como exterior) são discutidos: confira no <a href="${IR_LINKS.pr}" target="_blank" rel="noopener">Perguntas e Respostas IRPF</a> da Receita ou com um contador.</p>`;
+
+  // regimes
+  const places = [["binance", "Binance"], ["cryptocom", "Crypto.com"], ["self", "Carteiras próprias (Trezor, MetaMask, Trust, Lace…)"]];
+  $("#ir-regimes").innerHTML = places.map(([k, label]) => `
+    <label class="ir-reg">${esc(label)}
+      <select data-reg="${k}">
+        <option value="exterior" ${reg[k] === "exterior" ? "selected" : ""}>Exterior — Lei 14.754 (15% ao ano, sem isenção)</option>
+        <option value="brasil" ${reg[k] === "brasil" ? "selected" : ""}>Brasil — isenção até R$ 35 mil/mês</option>
+      </select>
+    </label>`).join("") + `<p class="muted small">A própria Binance diz que suas operações para brasileiros são "no exterior"; carteiras de autocustódia (sem intermediário) seguem a regra nacional. Antes de 2024 tudo seguia a regra nacional. ${Y < 2024 ? `<b>Para ${Y}, aplico a regra nacional para tudo.</b>` : ""}</p>`;
+
+  // ---------------- 1) Bens e Direitos
+  const cb = new Map((S.irCB || []).map((r) => [`${r.year}|${r.symbol}`, r]));
+  const avgAt = (y, sym) => {
+    const r = cb.get(`${y}|${sym}`);
+    if (r && Number(r.qty) > 0 && Number(r.cost_brl) > 0) return Number(r.cost_brl) / Number(r.qty);
+    // ano sem posição na corretora: usa o último preço médio conhecido antes
+    for (let yy = y - 1; yy >= y - 6; yy--) { const o = cb.get(`${yy}|${sym}`); if (o && Number(o.qty) > 0 && Number(o.cost_brl) > 0) return Number(o.cost_brl) / Number(o.qty); }
+    const st = S.settings[sym];
+    if (st?.avg_cost_brl) return Number(st.avg_cost_brl);
+    return null;
+  };
+  const items = (y) => {
+    const rows = S.yearEnd?.get(y) || [];
+    const m = new Map();
+    for (const r of rows) {
+      if (r.sym === "BRL") continue;
+      const pl = irPlace(r.k);
+      const key = `${r.sym}|${pl.id}`;
+      const it = m.get(key) || m.set(key, { sym: r.sym, ...pl, qty: 0, nets: new Set() }).get(key);
+      it.qty += r.qty;
+      if (pl.net) it.nets.add(pl.net);
+    }
+    for (const it of m.values()) { it.avg = avgAt(y, it.sym); it.cost = it.avg != null ? it.avg * it.qty : null; }
+    return m;
+  };
+  if (!S.yearEnd) {
+    $("#ir-bens").innerHTML = "";
+    $("#ir-bens-note").innerHTML = "Calculando as quantidades de cada fim de ano… (abra o Painel uma vez e volte aqui se demorar)";
+  } else {
+    const cur = items(Y), prev = items(Y - 1);
+    const bySym = new Map();
+    for (const it of cur.values()) bySym.set(it.sym, (bySym.get(it.sym) || 0) + (it.cost || 0));
+    const list = [...cur.values()].filter((it) => it.qty * (histUsd(it.sym, Date.UTC(Y, 11, 31)) || 0) * (brlAt(Date.UTC(Y, 11, 31)) || 5) > 1 || (it.cost || 0) > 1)
+      .sort((a, b) => (bySym.get(b.sym) || 0) - (bySym.get(a.sym) || 0) || (b.cost || 0) - (a.cost || 0));
+    // itens que existiam no ano anterior e zeraram (informar situação atual 0)
+    const gone = [...prev.values()].filter((p) => !cur.has(`${p.sym}|${p.id}`) && (p.cost || 0) > 1);
+    const row = (it, prevIt, zero) => {
+      const [code, cname] = irCode(it.sym);
+      const obrig = (bySym.get(it.sym) || 0) >= 5000;
+      const regime = it.place === "self" ? reg.self : reg[it.place];
+      const name = CGM.map[it.sym]?.name;
+      const where = it.place === "self" ? `em carteira de autocustódia (${it.label}${it.nets.size ? ", rede " + [...it.nets].join("/") : ""}), sem intermediário` : `custodiados na corretora ${it.label}${regime === "exterior" ? " (exterior)" : ""}`;
+      const desc = zero
+        ? `${it.sym}${name ? ` (${name})` : ""} ${where}: posição encerrada em ${Y}.`
+        : `${qtyFmt(it.qty)} ${it.sym}${name ? ` (${name})` : ""} ${where}. Custo médio de aquisição: ${brlFmt(it.avg)} por unidade.`;
+      return `<tr class="${!zero && !obrig ? "dim" : ""}">
+        <td><div class="asset sm">${icon(it.sym, "crypto")}<div><b>${esc(it.sym)}</b><div class="nets-small">${esc(it.label)}</div></div></div></td>
+        <td><b>08 / ${code}</b><div class="nets-small">${cname}</div></td>
+        <td class="hide-sm">${zero ? "0" : qtyFmt(it.qty)}</td>
+        <td>${brlFmt(prevIt?.cost ?? 0)}</td>
+        <td><b>${zero ? brlFmt(0) : it.cost != null ? brlFmt(it.cost) : '<span class="err">sem custo</span>'}</b></td>
+        <td class="hide-sm">${zero ? "informar" : obrig ? '<span class="badge warn">obrigatório</span>' : '<span class="muted small">opcional</span>'}</td>
+        <td><button class="btn small ghost" type="button" data-copy-ir="${esc(desc)}" title="${esc(desc)}">Copiar texto</button></td>
+      </tr>`;
+    };
+    $("#ir-bens").innerHTML = `<tr><th>Ativo / onde</th><th>Grupo / código</th><th class="hide-sm">Quantidade em 31/12</th><th>Situação em 31/12/${Y - 1}</th><th>Situação em 31/12/${Y}</th><th class="hide-sm"></th><th>Discriminação</th></tr>`
+      + list.map((it) => row(it, prev.get(`${it.sym}|${it.id}`), false)).join("")
+      + gone.map((it) => row(it, it, true)).join("");
+    const tot = list.reduce((a, it) => a + (it.cost || 0), 0);
+    $("#ir-bens-sum").textContent = `custo total em 31/12/${Y}: ${brlFmt(tot)}`;
+    const noCost = list.filter((it) => it.cost == null).map((it) => it.sym);
+    $("#ir-bens-note").innerHTML = `<p>Um item por ativo e por local de custódia. <b>Localização (país):</b> Brasil para carteira própria; para corretora no exterior, o país da corretora. <b>CNPJ:</b> só para corretora brasileira (em branco para exterior e autocustódia). Na discriminação, copie o texto do botão.</p>`
+      + (gone.length ? `<p>Itens com situação em 31/12/${Y} igual a zero: ativos que você tinha em ${Y - 1} e não tem mais naquele local.</p>` : "")
+      + (noCost.length ? `<p class="err">Sem custo conhecido (vieram por depósito ou troca fora das corretoras): ${noCost.join(", ")}. Informe o preço médio em reais no detalhe do ativo (Painel → clique no ativo → Ajustar preço médio).</p>` : "")
+      + `<p>Quantidade em 31/12 reconstruída pelas movimentações; custo pelo preço médio ponderado (Binance + Crypto.com) daquela data.</p>`;
+  }
+
+  // ---------------- 2) Vendas e trocas
+  const yrOf = (ts) => new Date(new Date(ts).getTime() - 3 * 3600e3).getUTCFullYear();
+  const g = (S.irGains || []).filter((x) => yrOf(x.ts) === Y && !isStableLike(x.symbol));
+  const months = new Map();
+  let extProc = 0, extGain = 0;
+  for (const x of g) {
+    const mth = new Date(new Date(x.ts).getTime() - 3 * 3600e3).getUTCMonth();
+    const m = months.get(mth) || months.set(mth, { nProc: 0, nGain: 0, eProc: 0, eGain: 0, n: 0 }).get(mth);
+    const gain = Number(x.proceeds_brl) - Number(x.cost_brl);
+    m.n++;
+    if (regOf(x.venue) === "brasil") { m.nProc += Number(x.proceeds_brl); m.nGain += gain; }
+    else { m.eProc += Number(x.proceeds_brl); m.eGain += gain; extProc += Number(x.proceeds_brl); extGain += gain; }
+  }
+  const MES = ["jan", "fev", "mar", "abr", "mai", "jun", "jul", "ago", "set", "out", "nov", "dez"];
+  let isentoTot = 0, darfTot = 0;
+  const mrows = [...months].sort(([a], [b]) => a - b).map(([mth, m]) => {
+    const over = m.nProc > 35000;
+    const tax = over && m.nGain > 0 ? m.nGain * 0.15 : 0;
+    if (!over && m.nGain > 0) isentoTot += m.nGain;
+    darfTot += tax;
+    return `<tr><td>${MES[mth]}/${Y}</td><td class="hide-sm">${m.n}</td>
+      <td>${brlFmt(m.nProc)}</td><td><span class="${cls(m.nGain)}">${brlFmt(m.nGain)}</span></td>
+      <td>${m.nProc ? (over ? `<span class="badge warn">acima de R$ 35 mil</span><div class="nets-small">imposto ≈ ${brlFmt(tax)}</div>` : '<span class="up">isento</span>') : "—"}</td>
+      <td>${brlFmt(m.eProc)}</td><td><span class="${cls(m.eGain)}">${brlFmt(m.eGain)}</span></td></tr>`;
+  });
+  $("#ir-gain-sum").textContent = g.length ? `${g.length} alienação(ões) em ${Y}` : "";
+  $("#ir-gains").innerHTML = !g.length ? `<p class="muted">Nenhuma venda ou troca registrada em ${Y} nas corretoras.</p>` : `
+    <div class="table-wrap"><table class="assets">
+      <tr><th>Mês</th><th class="hide-sm">Operações</th><th>Vendido — regra Brasil</th><th>Lucro</th><th>Situação</th><th>Vendido — exterior</th><th>Lucro</th></tr>
+      ${mrows.join("")}
+    </table></div>
+    <div class="ir-boxes">
+      <div class="info-box"><h3>Regra Brasil (isenção de R$ 35 mil/mês)</h3>
+        <div class="kv"><span>Lucro isento no ano</span><b>${brlFmt(isentoTot)}</b></div>
+        <div class="kv"><span>Imposto estimado (meses acima de R$ 35 mil)</span><b>${brlFmt(darfTot)}</b></div>
+        <p class="small muted">Lucro isento: ficha <b>Rendimentos Isentos e Não Tributáveis</b> (ganho de capital na alienação de bens de pequeno valor — confira o código no programa). Meses acima de R$ 35 mil: preencha o <b>GCAP</b> e pague DARF de 15% até o último dia útil do mês seguinte (em 2026 a Receita criou o código 1897 para cripto).</p></div>
+      <div class="info-box"><h3>Exterior (Lei 14.754/2023)</h3>
+        <div class="kv"><span>Total vendido no ano</span><b>${brlFmt(extProc)}</b></div>
+        <div class="kv"><span>Lucro − prejuízo no ano</span><b class="${cls(extGain)}">${brlFmt(extGain)}</b></div>
+        <div class="kv"><span>Imposto (15%)</span><b>${brlFmt(Math.max(0, extGain) * 0.15)}</b></div>
+        <p class="small muted">Apurado uma vez por ano, na própria declaração (sem DARF mensal e sem a faixa de R$ 35 mil); prejuízos do ano compensam lucros. Veja no Perguntas e Respostas o item “Aplicação financeira no exterior — como declarar”.</p></div>
+    </div>
+    <p class="muted small">Trocas entre criptos (ex.: USDT → BTC conta como compra; ETH → BTC é venda de ETH) também são alienações para a Receita. Transferências entre suas carteiras não são. Trocas feitas direto na blockchain (DEX, PancakeSwap…) não entram nesta conta.</p>`;
+
+  // ---------------- 3) Outros pontos
+  const yearTx = S.txs.filter((t) => t.ts && yrOf(t.ts) === Y);
+  let rendBrl = 0;
+  for (const t of yearTx) {
+    if (!/^csv-(rend|cdc-rend)/.test(t.tx_hash || "")) continue;
+    const ms = new Date(t.ts).getTime();
+    const usd = t.quote_asset === "USD" && t.quote_amount ? Number(t.quote_amount) : (histUsd((t.symbol || "").toUpperCase(), ms) || 0) * Number(t.amount);
+    rendBrl += usd * (brlAt(ms) || 0);
+  }
+  const futY = (S.fut || []).filter((r) => r.kind !== "transfer" && yrOf(r.ts) === Y);
+  const futRes = futY.reduce((a, r) => a + Number(r.amount), 0);
+  $("#ir-other").innerHTML = `
+    <div class="kv"><span>Rendimentos em cripto (Earn, staking, airdrops, cashback)</span><b>${brlFmt(rendBrl)}</b></div>
+    <p class="small muted">O tratamento desses ganhos não é pacífico: o mais comum é entrar no custo das moedas pelo valor do dia em que chegaram (é assim que o app calcula o preço médio). Consulte o Perguntas e Respostas ou um contador.</p>
+    ${futY.length ? `<div class="kv"><span>Resultado em futuros na Binance</span><b class="${cls(futRes)}">${money(futRes, "USD")} (${brlFmt(futY.reduce((a, r) => a + Number(r.amount) * (brlAt(new Date(r.ts).getTime()) || 0), 0))})</b></div>
+    <p class="small muted">Derivativos em corretora no exterior: a partir de 2024 entram como aplicação no exterior (Lei 14.754); antes disso, prejuízo não gera imposto.</p>` : ""}`;
+
+  // ---------------- passo a passo
+  $("#ir-steps").innerHTML = `
+    <ol class="ir-list">
+      <li>Entre no <a href="${IR_LINKS.meu}" target="_blank" rel="noopener">Meu Imposto de Renda</a> com sua conta gov.br (prata ou ouro) e, se puder, comece pela <b>declaração pré-preenchida</b>: ela traz o que corretoras brasileiras informaram à Receita. O que estiver em corretora estrangeira e em carteira própria você lança à mão.</li>
+      <li>Abra a ficha <b>Bens e Direitos</b> → <b>Novo</b> → grupo <b>08 – Criptoativos</b> → código da tabela acima (01, 02 ou 03).</li>
+      <li>Preencha <b>Localização (país)</b>, <b>CNPJ</b> (só corretora brasileira), cole a <b>Discriminação</b> (botão Copiar texto) e informe a <b>Situação em 31/12</b> do ano anterior e do ano da declaração (as duas colunas da tabela). Se já tinha o item na declaração passada, edite o mesmo item em vez de criar outro.</li>
+      <li>Se em algum mês as vendas passaram de R$ 35 mil (regra Brasil), o lucro vai pelo programa <b>GCAP</b> e o DARF deveria ter sido pago no mês seguinte; meses abaixo do limite com lucro entram em <b>Rendimentos Isentos</b>.</li>
+      <li>Lucro de cripto no exterior (Lei 14.754) é apurado na própria declaração anual, a 15%. Se tiver esse caso, confira se o “Meu Imposto de Renda” on-line aceita; algumas situações exigem o programa de computador (PGD).</li>
+      <li>Guarde os extratos da Binance e da Crypto.com (os mesmos que você importou aqui) como comprovante.</li>
+    </ol>
+    <p class="small"><a href="${IR_LINKS.pr}" target="_blank" rel="noopener">Perguntas e Respostas IRPF (Receita Federal) ↗</a> · <a href="${IR_LINKS.faq}" target="_blank" rel="noopener">Perguntas frequentes do IR ↗</a></p>`;
 }
 
 // ------------------------------------------------------------------ aba Informações
@@ -2289,6 +2508,7 @@ function bind() {
       document.querySelectorAll(".tab").forEach((t) => t.classList.toggle("hidden", t.id !== "tab-" + b.dataset.tab));
       if (b.dataset.tab === "painel") renderChart();
       if (b.dataset.tab === "futuros") renderFutures();
+      if (b.dataset.tab === "ir") renderIR();
     }));
   document.querySelectorAll("#ccy button").forEach((b) => {
     b.classList.toggle("active", b.dataset.ccy === S.ccy);
@@ -2335,6 +2555,20 @@ function bind() {
       $("#x-copy").textContent = "Copiada ✓";
     } catch { $("#x-copy").textContent = "Não deu para copiar"; }
     setTimeout(() => ($("#x-copy").textContent = "Copiar imagem"), 1800);
+  });
+  $("#ir-year").addEventListener("change", () => renderIR());
+  $("#ir-regimes").addEventListener("change", (e) => {
+    const sel = e.target.closest("[data-reg]");
+    if (!sel) return;
+    const r = irRegimes();
+    r[sel.dataset.reg] = sel.value;
+    store("ir.regime", JSON.stringify(r));
+    renderIR();
+  });
+  $("#tab-ir").addEventListener("click", (e) => {
+    const b = e.target.closest("[data-copy-ir]");
+    if (!b) return;
+    navigator.clipboard?.writeText(b.dataset.copyIr).then(() => { b.textContent = "Copiado ✓"; setTimeout(() => (b.textContent = "Copiar texto"), 1500); });
   });
   $("#d-info").addEventListener("click", (e) => {
     const b = e.target.closest("[data-copy]");

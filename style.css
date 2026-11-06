@@ -353,3 +353,13 @@ details.about[open] summary .lnk { display: none; }
 /* Futuros */
 .stat > .sub2, .d-sum .stat > .sub2 { font-size: 12px; color: var(--muted); margin-top: 4px; font-family: var(--mono); line-height: 1.5; }
 #fut-sub { font-size: 13px; }
+
+/* Imposto de Renda */
+.ir-list { margin: 8px 0; padding-left: 20px; display: grid; gap: 6px; line-height: 1.5; }
+.ir-regimes { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; }
+.ir-reg { display: grid; gap: 6px; font-size: 13px; color: var(--text); }
+.ir-boxes { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 12px; margin: 14px 0; }
+label.inline { display: inline-flex; align-items: center; gap: 8px; }
+label.inline select { width: auto; }
+#ir-bens td, #ir-bens th { white-space: nowrap; }
+#ir-bens-note p { margin: 8px 0 0; }
