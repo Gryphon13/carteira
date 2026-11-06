@@ -1416,7 +1416,8 @@ const irCode = (sym) => (sym === "BTC" ? ["01", "Bitcoin (BTC)"] : isStableLike(
 function irRegimes() {
   let r = {};
   try { r = JSON.parse(store("ir.regime") || "{}"); } catch { /* */ }
-  return { binance: "exterior", cryptocom: "exterior", self: "brasil", ...r };
+  // Binance: considerada corretora com sede no Brasil (Binance Brasil / CNPJ 45.165.233/0001-82) → regra nacional, por escolha do usuário
+  return { binance: "brasil", cryptocom: "exterior", self: "brasil", ...r };
 }
 const brlFmt = (v) => (v == null || !isFinite(v) ? "—" : v.toLocaleString("pt-BR", { style: "currency", currency: "BRL" }));
 const qtyFmt = (v) => Number(v).toLocaleString("pt-BR", { maximumFractionDigits: 8 });
@@ -1468,7 +1469,7 @@ async function renderIR() {
         <option value="exterior" ${reg[k] === "exterior" ? "selected" : ""}>Exterior — Lei 14.754 (15% ao ano, sem isenção)</option>
         <option value="brasil" ${reg[k] === "brasil" ? "selected" : ""}>Brasil — isenção até R$ 35 mil/mês</option>
       </select>
-    </label>`).join("") + `<p class="muted small">A própria Binance diz que suas operações para brasileiros são "no exterior"; carteiras de autocustódia (sem intermediário) seguem a regra nacional. Antes de 2024 tudo seguia a regra nacional. ${Y < 2024 ? `<b>Para ${Y}, aplico a regra nacional para tudo.</b>` : ""}</p>`;
+    </label>`).join("") + `<p class="muted small">Binance está na regra nacional por escolha sua (ela tem empresa e CNPJ no Brasil); a própria Binance, porém, diz que as operações são "no exterior" — guarde esse ponto caso a Receita pergunte. Carteiras de autocustódia (sem intermediário) seguem a regra nacional. Antes de 2024 tudo seguia a regra nacional. ${Y < 2024 ? `<b>Para ${Y}, aplico a regra nacional para tudo.</b>` : ""}</p>`;
 
   // ---------------- 1) Bens e Direitos
   const cb = new Map((S.irCB || []).map((r) => [`${r.year}|${r.symbol}`, r]));
