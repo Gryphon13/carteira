@@ -78,10 +78,38 @@
         <p class="muted small" id="chart-empty">O gráfico vai se formando com as fotos diárias (uma por dia, automática, e uma a cada atualização manual).</p>
       </section>
 
+      <section class="card filters-card">
+        <div class="card-head">
+          <h2>Filtros</h2>
+          <div class="f-sum"><span id="f-summary"></span> <button type="button" id="f-clear" class="btn ghost small hidden">Limpar filtros</button></div>
+        </div>
+        <div class="frow">
+          <label>Ativo<input id="f-q" placeholder="BTC, PETR4…" autocomplete="off" /></label>
+          <label>Rede<select id="f-net"></select></label>
+          <label>Resultado / variação
+            <select id="f-res">
+              <option value="">Todos</option>
+              <option value="lucro">Em lucro</option>
+              <option value="prejuizo">Em prejuízo</option>
+              <option value="sem">Sem preço médio</option>
+              <option value="subindo">Subindo (24h / dia)</option>
+              <option value="caindo">Caindo (24h / dia)</option>
+            </select>
+          </label>
+          <label><span id="f-min-label">Valor mínimo</span><input id="f-min" type="number" step="any" min="0" placeholder="0" /></label>
+          <label>Qtd. mínima<input id="f-minq" type="number" step="any" min="0" placeholder="0" /></label>
+        </div>
+        <div class="local-row">
+          <span class="muted small">Onde está:</span>
+          <div id="f-locals" class="chips"></div>
+          <label class="toggle"><input type="checkbox" id="show-spam" /> mostrar tokens sem preço</label>
+        </div>
+      </section>
+
       <section class="card">
         <div class="card-head">
           <h2>Cripto</h2>
-          <label class="toggle"><input type="checkbox" id="show-spam" /> mostrar tokens sem preço</label>
+          <span class="muted small">Clique no título de uma coluna para ordenar</span>
         </div>
         <div class="table-wrap"><table class="assets" id="crypto-table"></table></div>
       </section>
@@ -89,6 +117,11 @@
       <section class="card">
         <div class="card-head"><h2>B3, renda fixa e outros</h2><span class="muted small">B3 com atraso de ~15 min</span></div>
         <div class="table-wrap"><table class="assets" id="manual-table"></table></div>
+      </section>
+
+      <section class="card hidden" id="watch-card">
+        <div class="card-head"><h2>Minha lista do TradingView</h2><span class="muted small">Clique num ativo para abrir no TradingView</span></div>
+        <div id="tv-watch"></div>
       </section>
     </main>
 
@@ -161,6 +194,16 @@
             <button class="btn primary" type="submit">Salvar</button>
             <button class="btn ghost hidden" type="button" id="m-cancel">Cancelar edição</button>
           </div>
+        </form>
+      </section>
+
+      <section class="card">
+        <div class="card-head"><h2>Lista do TradingView</h2><span class="muted small" id="tv-count"></span></div>
+        <form id="tv-form" class="form compact">
+          <p class="hint">No TradingView, abra a lista → botão <b>Visão avançada</b> → <b>Exportar lista</b> e escolha o arquivo .txt abaixo. Se o seu plano não tiver exportação, cole os símbolos separados por vírgula ou um por linha (ex.: <code>BINANCE:BTCUSDT, BMFBOVESPA:PETR4</code>). Linhas começando com <code>###</code> viram seções.</p>
+          <label>Arquivo exportado (.txt)<input type="file" id="tv-file" accept=".txt,text/plain" /></label>
+          <label>Símbolos<textarea id="tv-list" rows="4" spellcheck="false" placeholder="###Cripto,BINANCE:BTCUSDT,BINANCE:ETHUSDT,###B3,BMFBOVESPA:PETR4"></textarea></label>
+          <div class="row-btns"><button class="btn primary" type="submit">Salvar lista</button></div>
         </form>
       </section>
     </main>

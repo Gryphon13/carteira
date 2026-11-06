@@ -22,7 +22,17 @@ const S = {
   ccy: store("ccy") || "BRL",
   fxSrc: store("fxSrc") || "com",
   range: 365,
+  prefs: {},
+  filters: loadFilters(),
+  sort: { k: "value", d: -1 },
 };
+function loadFilters() {
+  const def = { q: "", locals: [], net: "", res: "", min: "", minq: "", spam: false };
+  try { return { ...def, ...JSON.parse(localStorage.getItem("carteira.filtros") || "{}") }; } catch { return def; }
+}
+function saveFilters() {
+  try { localStorage.setItem("carteira.filtros", JSON.stringify(S.filters)); } catch { /* */ }
+}
 const STABLE = new Set(["USDT", "USDC", "FDUSD", "BUSD", "DAI", "TUSD", "USDP", "USD1", "USDE", "PYUSD"]);
 const NET = {
   bitcoin: "Bitcoin", cardano: "Cardano", polkadot: "Polkadot", "assethub-polkadot": "Polkadot Asset Hub",
@@ -65,6 +75,20 @@ function pct(v) {
   if (v == null || !isFinite(v)) return "";
   return `${v >= 0 ? "+" : ""}${(v * 100).toFixed(2).replace(".", ",")}%`;
 }
+const otherCcy = () => (S.ccy === "BRL" ? "USD" : "BRL");
+// valor em US$ mostrado nas duas moedas (principal em cima, a outra embaixo)
+function dualUsd(usd, fmt = money, signed = false) {
+  const brl = usd != null && rate() ? usd * rate() : null;
+  const [a, b] = S.ccy === "BRL" ? [brl, usd] : [usd, brl];
+  const c = signed ? cls(usd) : "";
+  return `<b class="${c}">${fmt(a, S.ccy)}</b><div class="alt ${c}">${fmt(b, otherCcy())}</div>`;
+}
+function dualBrl(brl, fmt = money, signed = false) {
+  const usd = brl != null && rate() ? brl / rate() : null;
+  const [a, b] = S.ccy === "BRL" ? [brl, usd] : [usd, brl];
+  const c = signed ? cls(brl) : "";
+  return `<b class="${c}">${fmt(a, S.ccy)}</b><div class="alt ${c}">${fmt(b, otherCcy())}</div>`;
+}
 const cls = (v) => (v > 0 ? "up" : v < 0 ? "down" : "");
 function ago(ts) {
   if (!ts) return "";
@@ -98,9 +122,13 @@ function change24(sym) {
   const l = S.live[sym];
   return l && l.o ? (l.p - l.o) / l.o : null;
 }
-function cryptoRows() {
+const KIND_LOCAL = { b3: "B3", renda_fixa: "Renda fixa", outro: "Outros" };
+function cryptoRows(useFilters = false) {
+  const f = S.filters;
   const map = new Map();
   for (const h of S.holdings) {
+    if (useFilters && f.locals.length && !f.locals.includes(h.source)) continue;
+    if (useFilters && f.net && h.network !== f.net) continue;
     const k = h.symbol;
     const r = map.get(k) || { sym: k, name: h.name, amount: 0, priceSync: null, parts: [], hasPrice: false };
     r.amount += Number(h.amount);
@@ -112,12 +140,19 @@ function cryptoRows() {
     r.parts.push(h);
     map.set(k, r);
   }
-  const rows = [...map.values()].map((r) => {
+  return [...map.values()].map((r) => {
     const p = livePrice(r.sym, r.priceSync);
     const st = S.settings[r.sym] || {};
-    return { ...r, price: p, value: p != null ? p * r.amount : null, ch: change24(r.sym), hidden: !!st.hidden, st };
+    let pnlUsd = null, costUsd = null;
+    if (st.avg_cost_usd && p != null) {
+      costUsd = st.avg_cost_usd * r.amount;
+      pnlUsd = p * r.amount - costUsd;
+    } else if (st.avg_cost_brl && p != null && rate()) {
+      costUsd = (st.avg_cost_brl * r.amount) / rate();
+      pnlUsd = p * r.amount - costUsd;
+    }
+    return { ...r, price: p, value: p != null ? p * r.amount : null, ch: change24(r.sym), hidden: !!st.hidden, st, pnlUsd, costUsd };
   });
-  return rows.sort((a, b) => (b.value ?? -1) - (a.value ?? -1));
 }
 function manualRows() {
   return S.manual.map((a) => {
@@ -132,7 +167,46 @@ function manualRows() {
       valueBrl = toBrl(a.current_value != null ? Number(a.current_value) : Number(a.avg_price || 0) * Number(a.quantity));
     }
     const costBrl = a.avg_price != null ? toBrl(Number(a.avg_price) * Number(a.quantity)) : null;
-    return { ...a, px, prev, valueBrl, costBrl, ch: px && prev ? (px - prev) / prev : null };
+    const pnlBrl = costBrl != null && valueBrl != null ? valueBrl - costBrl : null;
+    return { ...a, local: KIND_LOCAL[a.kind], px, prev, valueBrl, costBrl, pnlBrl, ch: px && prev ? (px - prev) / prev : null };
+  });
+}
+// filtros combinados (todos precisam bater)
+function passCommon({ sym, name, amount, valueCcy, pnl, ch }) {
+  const f = S.filters;
+  if (f.q) {
+    const q = f.q.trim().toUpperCase();
+    if (!sym.toUpperCase().includes(q) && !(name || "").toUpperCase().includes(q)) return false;
+  }
+  if (f.res === "lucro" && !(pnl > 0)) return false;
+  if (f.res === "prejuizo" && !(pnl < 0)) return false;
+  if (f.res === "sem" && pnl != null) return false;
+  if (f.res === "subindo" && !(ch > 0)) return false;
+  if (f.res === "caindo" && !(ch < 0)) return false;
+  if (f.min !== "" && !(valueCcy >= Number(f.min))) return false;
+  if (f.minq !== "" && !(amount >= Number(f.minq))) return false;
+  return true;
+}
+function filteredCrypto() {
+  return cryptoRows(true).filter((r) =>
+    r.parts.length &&
+    (S.filters.spam || r.hasPrice || S.live[r.sym]) &&
+    passCommon({ sym: r.sym, name: r.name, amount: r.amount, valueCcy: toCcy(r.value), pnl: r.pnlUsd, ch: r.ch }));
+}
+function filteredManual() {
+  const f = S.filters;
+  return manualRows().filter((a) => {
+    if (f.net) return false; // redes valem só para cripto
+    if (f.locals.length && !f.locals.includes(a.local)) return false;
+    return passCommon({ sym: a.symbol, name: a.name, amount: Number(a.quantity), valueCcy: brlToCcy(a.valueBrl), pnl: a.pnlBrl, ch: a.ch });
+  });
+}
+function sortRows(rows, get) {
+  const { k, d } = S.sort;
+  return rows.sort((a, b) => {
+    const x = get(a, k), y = get(b, k);
+    if (typeof x === "string" || typeof y === "string") return d * String(x ?? "").localeCompare(String(y ?? ""));
+    return d * ((x ?? -Infinity) - (y ?? -Infinity));
   });
 }
 function totals() {
@@ -152,13 +226,14 @@ function totals() {
 
 // ------------------------------------------------------------------ dados
 async function loadAll() {
-  const [w, h, m, st, tx, sn] = await Promise.all([
+  const [w, h, m, st, tx, sn, pf] = await Promise.all([
     sb.from("wallets").select("*").order("created_at"),
     sb.from("holdings").select("*"),
     sb.from("manual_assets").select("*").order("created_at"),
     sb.from("asset_settings").select("*"),
     sb.from("transactions").select("*").order("ts", { ascending: false }).limit(500),
     sb.from("snapshots").select("taken_at,total_usd,total_brl,usd_brl").order("taken_at").limit(5000),
+    sb.from("user_prefs").select("*").maybeSingle(),
   ]);
   for (const r of [w, h, m, st, tx, sn]) if (r.error) throw r.error;
   S.wallets = w.data;
@@ -167,6 +242,7 @@ async function loadAll() {
   S.settings = Object.fromEntries(st.data.map((s) => [s.symbol, s]));
   S.txs = tx.data;
   S.snaps = sn.data;
+  S.prefs = pf.data || {};
   const last = S.holdings.reduce((m, x) => (x.updated_at > m ? x.updated_at : m), "");
   $("#last-sync").textContent = last ? `Saldos atualizados ${ago(last)}` : "Ainda não sincronizado";
   connectLive();
@@ -235,6 +311,7 @@ function renderAll() {
   renderMovs();
   renderCadastros();
   renderTape();
+  renderWatchlist();
 }
 
 function renderFx() {
@@ -258,71 +335,96 @@ function renderPainel() {
   c24.textContent = ch != null && base ? `${money(ch)} (${pct(ch / base)}) em 24h` : "";
 
   // alocação
+  const mainBrl = t.totalBrl;
   const parts = [
-    ["Cripto", toCcy(t.cryptoUsd), "#f7931a"],
-    ["B3", brlToCcy(t.b3), "#0ea5e9"],
-    ["Renda fixa", brlToCcy(t.rf), "#10b981"],
+    ["Cripto", rate() ? t.cryptoUsd * rate() : null, "#f7931a"],
+    ["B3", t.b3, "#0ea5e9"],
+    ["Renda fixa", t.rf, "#10b981"],
   ];
-  if (t.out) parts.push(["Outros", brlToCcy(t.out), "#a78bfa"]);
+  if (t.out) parts.push(["Outros", t.out, "#a78bfa"]);
   $("#alloc").innerHTML = parts
-    .map(([n, v, c]) => {
-      const p = main ? (v || 0) / main : 0;
-      return `<div class="stat"><div class="muted">${n} <span class="small">${main ? (p * 100).toFixed(1).replace(".", ",") + "%" : ""}</span></div><div class="v">${money(v)}</div><div class="bar"><i style="width:${(p * 100).toFixed(1)}%;background:${c}"></i></div></div>`;
+    .map(([n, vBrl, c]) => {
+      const p = mainBrl ? (vBrl || 0) / mainBrl : 0;
+      return `<div class="stat"><div class="muted">${n} <span class="small">${mainBrl ? (p * 100).toFixed(1).replace(".", ",") + "%" : ""}</span></div><div class="v">${dualBrl(vBrl)}</div><div class="bar"><i style="width:${(p * 100).toFixed(1)}%;background:${c}"></i></div></div>`;
     })
     .join("");
 
+  renderFilters();
+  const arrow = (k) => (S.sort.k === k ? (S.sort.d > 0 ? " ▲" : " ▼") : "");
+  const th = (k, label, extra = "") => `<th data-k="${k}" class="sortable ${extra}">${label}${arrow(k)}</th>`;
+
   // tabela cripto
-  const showSpam = $("#show-spam").checked;
-  const rows = cryptoRows().filter((r) => showSpam || r.hasPrice || S.live[r.sym]);
-  const ccy = S.ccy;
-  const head = `<tr><th>Ativo</th><th>Preço</th><th>24h</th><th class="hide-sm">Quantidade</th><th>Valor</th><th class="hide-sm">% cart.</th><th class="hide-sm">Resultado</th></tr>`;
-  const totalC = rows.filter((r) => !r.hidden).reduce((s, r) => s + (r.value || 0), 0);
+  const rows = sortRows(filteredCrypto(), (r, k) => ({ sym: r.sym, price: r.price, ch: r.ch, amount: r.amount, value: r.value, pnl: r.pnlUsd })[k]);
+  const totalC = cryptoRows().filter((r) => !r.hidden).reduce((s, r) => s + (r.value || 0), 0);
+  const head = `<tr>${th("sym", "Ativo")}${th("price", "Preço")}${th("ch", "24h")}${th("amount", "Quantidade", "hide-sm")}${th("value", "Valor")}<th class="hide-sm">% cart.</th>${th("pnl", "Resultado", "hide-sm")}</tr>`;
   const body = rows
     .map((r) => {
-      const pUsd = r.price;
-      const pShown = ccy === "USD" ? pUsd : pUsd != null && rate() ? pUsd * rate() : null;
-      const val = toCcy(r.value);
-      let pnl = null;
-      if (r.st.avg_cost_usd && pUsd != null) pnl = toCcy((pUsd - r.st.avg_cost_usd) * r.amount);
-      else if (r.st.avg_cost_brl && pUsd != null && rate()) pnl = brlToCcy((pUsd * rate() - r.st.avg_cost_brl) * r.amount);
-      const cost = r.st.avg_cost_usd ? toCcy(r.st.avg_cost_usd * r.amount) : r.st.avg_cost_brl ? brlToCcy(r.st.avg_cost_brl * r.amount) : null;
-      const nets = [...new Set(r.parts.map((p) => NET[p.network] || p.network))].join(", ");
+      const nets = [...new Set(r.parts.map((p) => `${p.source} · ${NET[p.network] || p.network}`))].join(", ");
       const live = S.live[r.sym];
       const flash = live?.dir > 0 ? "flash-up" : live?.dir < 0 ? "flash-down" : "";
       if (live) live.dir = 0;
       return `<tr class="click ${r.hidden ? "dim" : ""}" data-sym="${esc(r.sym)}">
         <td><div class="asset">${icon(r.sym)}<div><div class="sym">${esc(r.sym)}</div><div class="nets-small">${esc(nets)}</div></div></div></td>
-        <td><span class="price ${flash}">${price(pShown, ccy)}</span></td>
+        <td><span class="price ${flash}">${dualUsd(r.price, price)}</span></td>
         <td><span class="pct ${cls(r.ch)}">${pct(r.ch)}</span></td>
         <td class="hide-sm">${qty(r.amount)}</td>
-        <td><b>${money(val)}</b></td>
+        <td>${dualUsd(r.value)}</td>
         <td class="hide-sm">${totalC && r.value && !r.hidden ? ((r.value / totalC) * 100).toFixed(1).replace(".", ",") + "%" : ""}</td>
-        <td class="hide-sm">${pnl != null ? `<span class="${cls(pnl)}">${money(pnl)}</span><div class="nets-small">${cost ? pct(pnl / cost) : ""}</div>` : '<span class="muted small">informar preço médio</span>'}</td>
+        <td class="hide-sm">${r.pnlUsd != null ? `${dualUsd(r.pnlUsd, money, true)}<div class="nets-small ${cls(r.pnlUsd)}">${r.costUsd ? pct(r.pnlUsd / r.costUsd) : ""}</div>` : '<span class="muted small">informar preço médio</span>'}</td>
       </tr>`;
     })
     .join("");
-  $("#crypto-table").innerHTML = head + (body || `<tr><td colspan="7" class="empty">Nenhum ativo ainda. Cadastre suas carteiras em <b>Cadastros</b> e clique em <b>Atualizar saldos</b>.</td></tr>`);
+  const emptyMsg = S.holdings.length
+    ? "Nenhum ativo com esses filtros."
+    : "Nenhum ativo ainda. Cadastre suas carteiras em <b>Cadastros</b> e clique em <b>Atualizar saldos</b>.";
+  $("#crypto-table").innerHTML = head + (body || `<tr><td colspan="7" class="empty">${emptyMsg}</td></tr>`);
 
   // tabela manual
-  const mr = manualRows();
-  const kindName = { b3: "B3", renda_fixa: "Renda fixa", outro: "Outro" };
+  const mr = sortRows(filteredManual(), (a, k) => ({ sym: a.symbol, price: a.px, ch: a.ch, amount: Number(a.quantity), value: a.valueBrl, pnl: a.pnlBrl })[k]);
   $("#manual-table").innerHTML =
-    `<tr><th>Ativo</th><th>Preço</th><th>Dia</th><th class="hide-sm">Quantidade</th><th>Valor</th><th class="hide-sm">Resultado</th></tr>` +
+    `<tr>${th("sym", "Ativo")}${th("price", "Preço")}${th("ch", "Dia")}${th("amount", "Quantidade", "hide-sm")}${th("value", "Valor")}${th("pnl", "Resultado", "hide-sm")}</tr>` +
     (mr
-      .map((a) => {
-        const val = brlToCcy(a.valueBrl);
-        const pnl = a.costBrl != null && a.valueBrl != null ? brlToCcy(a.valueBrl - a.costBrl) : null;
-        const pxShown = a.px != null ? (S.ccy === "BRL" ? a.px : rate() ? a.px / rate() : null) : null;
-        return `<tr class="${a.kind === "b3" ? "click" : ""}" data-b3="${a.kind === "b3" ? esc(a.symbol) : ""}">
-          <td><div class="asset">${icon(a.symbol)}<div><div class="sym">${esc(a.symbol)}</div><div class="nets-small">${esc(a.name || kindName[a.kind])}</div></div></div></td>
-          <td><span class="price">${a.kind === "b3" ? price(pxShown, S.ccy) : "—"}</span></td>
+      .map((a) => `<tr class="${a.kind === "b3" ? "click" : ""}" data-b3="${a.kind === "b3" ? esc(a.symbol) : ""}">
+          <td><div class="asset">${icon(a.symbol)}<div><div class="sym">${esc(a.symbol)}</div><div class="nets-small">${esc(a.name || a.local)}</div></div></div></td>
+          <td><span class="price">${a.kind === "b3" ? dualBrl(a.px, price) : "—"}</span></td>
           <td><span class="pct ${cls(a.ch)}">${pct(a.ch)}</span></td>
           <td class="hide-sm">${a.kind === "b3" ? qty(Number(a.quantity)) : ""}</td>
-          <td><b>${money(val)}</b></td>
-          <td class="hide-sm">${pnl != null ? `<span class="${cls(pnl)}">${money(pnl)}</span><div class="nets-small">${a.costBrl ? pct((a.valueBrl - a.costBrl) / a.costBrl) : ""}</div>` : ""}</td>
-        </tr>`;
-      })
-      .join("") || `<tr><td colspan="6" class="empty">Cadastre ações, FIIs e renda fixa em <b>Cadastros</b>.</td></tr>`);
+          <td>${dualBrl(a.valueBrl)}</td>
+          <td class="hide-sm">${a.pnlBrl != null ? `${dualBrl(a.pnlBrl, money, true)}<div class="nets-small ${cls(a.pnlBrl)}">${a.costBrl ? pct(a.pnlBrl / a.costBrl) : ""}</div>` : ""}</td>
+        </tr>`)
+      .join("") || `<tr><td colspan="6" class="empty">${S.manual.length ? "Nenhum ativo com esses filtros." : "Cadastre ações, FIIs e renda fixa em <b>Cadastros</b>."}</td></tr>`);
+
+  // resumo do que está filtrado
+  const fUsd = rows.filter((r) => !r.hidden).reduce((s, r) => s + (r.value || 0), 0) + (rate() ? mr.reduce((s, a) => s + (a.valueBrl || 0), 0) / rate() : 0);
+  const active = filtersActive();
+  $("#f-summary").innerHTML = active
+    ? `Filtrado: <b>${rows.length + mr.length}</b> ativo(s) · <b>${money(toCcy(fUsd))}</b> <span class="muted">${money(S.ccy === "BRL" ? fUsd : rate() ? fUsd * rate() : null, otherCcy())}</span>`
+    : `<span class="muted">${rows.length + mr.length} ativo(s)</span>`;
+  $("#f-clear").classList.toggle("hidden", !active);
+}
+
+function filtersActive() {
+  const f = S.filters;
+  return !!(f.q || f.locals.length || f.net || f.res || f.min !== "" || f.minq !== "");
+}
+let filtersBuilt = "";
+function renderFilters() {
+  const f = S.filters;
+  const locals = [...new Set([...S.wallets.filter((w) => w.active).map((w) => w.label), ...S.manual.map((a) => KIND_LOCAL[a.kind])])];
+  const nets = [...new Set(S.holdings.map((h) => h.network))];
+  const key = JSON.stringify([locals, nets, f]);
+  if (key === filtersBuilt) return;
+  filtersBuilt = key;
+  $("#f-locals").innerHTML = locals.map((l) => `<button type="button" class="chip-btn ${f.locals.includes(l) ? "on" : ""}" data-local="${esc(l)}">${esc(l)}</button>`).join("");
+  const sel = $("#f-net");
+  sel.innerHTML = `<option value="">Todas as redes</option>` + nets.map((n) => `<option value="${esc(n)}">${esc(NET[n] || n)}</option>`).join("");
+  sel.value = f.net;
+  if (document.activeElement !== $("#f-q")) $("#f-q").value = f.q;
+  $("#f-res").value = f.res;
+  if (document.activeElement !== $("#f-min")) $("#f-min").value = f.min;
+  if (document.activeElement !== $("#f-minq")) $("#f-minq").value = f.minq;
+  $("#show-spam").checked = !!f.spam;
+  $("#f-min-label").textContent = `Valor mínimo (${S.ccy === "BRL" ? "R$" : "US$"})`;
 }
 
 // gráfico do patrimônio
@@ -363,11 +465,43 @@ function tvSymbol(sym) {
   if (sym === "USDT") return "BINANCE:USDTBRL";
   return `BINANCE:${sym}USDT`;
 }
+// lista do TradingView (exportada em .txt ou colada): "###Seção,BINANCE:BTCUSDT,BMFBOVESPA:PETR4"
+function parseWatchlist(text) {
+  const groups = [];
+  let cur = { name: "Minha lista", symbols: [] };
+  for (const tok of (text || "").split(/[,\n\r;]+/).map((x) => x.trim()).filter(Boolean)) {
+    if (tok.startsWith("###")) {
+      if (cur.symbols.length) groups.push(cur);
+      cur = { name: tok.replace(/^#+/, "").trim() || "Lista", symbols: [] };
+    } else if (/^[A-Z0-9_.!]+:[A-Z0-9_.!/-]+$/i.test(tok)) {
+      cur.symbols.push(tok.toUpperCase());
+    }
+  }
+  if (cur.symbols.length) groups.push(cur);
+  return groups;
+}
+function renderWatchlist() {
+  const groups = parseWatchlist(S.prefs.tv_watchlist);
+  const n = groups.reduce((s, g) => s + g.symbols.length, 0);
+  $("#tv-list").value = S.prefs.tv_watchlist || "";
+  $("#tv-count").textContent = n ? `${n} símbolo(s) em ${groups.length} seção(ões)` : "Nenhuma lista salva.";
+  $("#watch-card").classList.toggle("hidden", !n);
+  if (!n) return;
+  const height = Math.min(900, 80 + groups.length * 36 + n * 40);
+  $("#tv-watch").style.height = height + "px";
+  tvWidget($("#tv-watch"), "market-quotes", {
+    width: "100%", height, isTransparent: true, colorTheme: "dark", locale: "br", showSymbolLogo: true,
+    symbolsGroups: groups.map((g) => ({ name: g.name, symbols: g.symbols.map((x) => ({ name: x, displayName: x.split(":")[1] })) })),
+  });
+}
 function renderTape() {
+  const watch = parseWatchlist(S.prefs.tv_watchlist).flatMap((g) => g.symbols).map((x) => ({ proName: x, title: x.split(":")[1] }));
   const top = cryptoRows().filter((r) => r.value && !STABLE.has(r.sym)).slice(0, 8).map((r) => ({ proName: tvSymbol(r.sym), title: r.sym }));
   const b3 = S.manual.filter((a) => a.kind === "b3").map((a) => ({ proName: a.tv_symbol || `BMFBOVESPA:${a.symbol.toUpperCase()}`, title: a.symbol.toUpperCase() }));
-  const symbols = [...top, { proName: "BMFBOVESPA:IBOV", title: "Ibovespa" }, ...b3, { proName: "FX_IDC:USDBRL", title: "USD/BRL" }];
-  if (!top.length) symbols.unshift({ proName: "BINANCE:BTCUSDT", title: "BTC" }, { proName: "BINANCE:ETHUSDT", title: "ETH" });
+  let symbols = [...top, { proName: "BMFBOVESPA:IBOV", title: "Ibovespa" }, ...b3, { proName: "FX_IDC:USDBRL", title: "USD/BRL" }, ...watch];
+  if (!top.length && !watch.length) symbols.unshift({ proName: "BINANCE:BTCUSDT", title: "BTC" }, { proName: "BINANCE:ETHUSDT", title: "ETH" });
+  const seen = new Set();
+  symbols = symbols.filter((x) => !seen.has(x.proName) && seen.add(x.proName)).slice(0, 40);
   tvWidget($("#tv-tape"), "ticker-tape", { symbols, showSymbolLogo: true, isTransparent: true, displayMode: "adaptive", colorTheme: "dark", locale: "br" });
 }
 function tvWidget(el, name, cfg) {
@@ -445,14 +579,14 @@ function renderMovs() {
     (list
       .map((t) => {
         const p = livePrice((t.symbol || "").toUpperCase(), prices[(t.symbol || "").toUpperCase()]);
-        const v = p != null && t.amount != null ? toCcy(p * Number(t.amount)) : null;
+        const v = p != null && t.amount != null ? p * Number(t.amount) : null;
         const cp = t.counterparty ? (t.counterparty.length > 26 ? t.counterparty.slice(0, 10) + "…" + t.counterparty.slice(-8) : t.counterparty) : "";
         return `<tr>
           <td>${t.ts ? new Date(t.ts).toLocaleString("pt-BR", { dateStyle: "short", timeStyle: "short" }) : "—"}</td>
           <td><span class="${t.direction === "in" ? "up" : t.direction === "out" ? "down" : ""}">${dname[t.direction] || t.direction}</span></td>
           <td><b>${esc(t.symbol || "")}</b> <span class="nets-small">${esc(NET[t.network] || t.network)}</span></td>
           <td>${qty(Number(t.amount))}</td>
-          <td class="hide-sm">${money(v)}</td>
+          <td class="hide-sm">${dualUsd(v)}</td>
           <td class="hide-sm">${esc(t.source)}</td>
           <td class="hide-sm"><span class="nets-small" title="${esc(t.counterparty || "")}">${esc(cp)}</span></td>
           <td>${t.url ? `<a href="${esc(t.url)}" target="_blank" rel="noopener">ver ↗</a>` : ""}</td>
@@ -628,7 +762,51 @@ function bind() {
     renderFx();
     renderAll();
   });
-  $("#show-spam").addEventListener("change", renderPainel);
+  const setF = (k, v) => {
+    S.filters[k] = v;
+    saveFilters();
+    renderPainel();
+  };
+  $("#show-spam").addEventListener("change", (e) => setF("spam", e.target.checked));
+  $("#f-q").addEventListener("input", (e) => setF("q", e.target.value));
+  $("#f-net").addEventListener("change", (e) => setF("net", e.target.value));
+  $("#f-res").addEventListener("change", (e) => setF("res", e.target.value));
+  $("#f-min").addEventListener("input", (e) => setF("min", e.target.value));
+  $("#f-minq").addEventListener("input", (e) => setF("minq", e.target.value));
+  $("#f-locals").addEventListener("click", (e) => {
+    const b = e.target.closest("[data-local]");
+    if (!b) return;
+    const l = b.dataset.local;
+    const ls = S.filters.locals;
+    setF("locals", ls.includes(l) ? ls.filter((x) => x !== l) : [...ls, l]);
+  });
+  $("#f-clear").addEventListener("click", () => {
+    S.filters = { q: "", locals: [], net: "", res: "", min: "", minq: "", spam: S.filters.spam };
+    saveFilters();
+    renderPainel();
+  });
+  ["#crypto-table", "#manual-table"].forEach((id) =>
+    $(id).addEventListener("click", (e) => {
+      const h = e.target.closest("th[data-k]");
+      if (!h) return;
+      e.stopPropagation();
+      const k = h.dataset.k;
+      S.sort = { k, d: S.sort.k === k ? -S.sort.d : k === "sym" ? 1 : -1 };
+      renderPainel();
+    }, true));
+  $("#tv-file").addEventListener("change", async (e) => {
+    const file = e.target.files[0];
+    if (file) $("#tv-list").value = await file.text();
+  });
+  $("#tv-form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const text = $("#tv-list").value.trim();
+    const { error } = await sb.from("user_prefs").upsert({ user_id: S.user.id, tv_watchlist: text || null, updated_at: new Date().toISOString() });
+    if (error) return alertMsg(error.message);
+    S.prefs.tv_watchlist = text;
+    renderWatchlist();
+    renderTape();
+  });
   $("#sync").addEventListener("click", () => runSync());
   $("#logout").addEventListener("click", async () => { await sb.auth.signOut(); location.reload(); });
 

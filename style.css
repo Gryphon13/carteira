@@ -147,3 +147,25 @@ td .pct { font-family: var(--mono); font-size: 12px; }
   .d-cols { grid-template-columns: 1fr; }
   .tv-chart { height: 360px; }
 }
+
+/* Duas moedas */
+.alt { font-family: var(--mono); font-size: 11px; color: var(--muted); font-weight: 400; margin-top: 1px; }
+.alt.up, .alt.down { opacity: .85; }
+.stat .v .alt { font-size: 12px; }
+
+/* Filtros */
+.frow { display: grid; grid-template-columns: 2fr 1.4fr 1.6fr 1fr 1fr; gap: 10px; }
+.local-row { display: flex; align-items: center; gap: 10px; margin-top: 12px; flex-wrap: wrap; }
+.local-row .toggle { margin-left: auto; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.chip-btn { background: var(--panel-2); border: 1px solid var(--line); color: var(--muted); border-radius: 99px; padding: 5px 12px; font: inherit; font-size: 12px; font-weight: 600; cursor: pointer; }
+.chip-btn.on { background: color-mix(in srgb, var(--accent) 18%, transparent); border-color: var(--accent); color: var(--text); }
+.f-sum { font-size: 13px; display: flex; gap: 8px; align-items: center; }
+th.sortable { cursor: pointer; user-select: none; }
+th.sortable:hover { color: var(--text); }
+textarea { background: var(--panel-2); border: 1px solid var(--line); color: var(--text); border-radius: 10px; padding: 9px 11px; font: 12px/1.5 var(--mono); width: 100%; resize: vertical; }
+code { font-family: var(--mono); font-size: 11px; background: var(--panel-2); padding: 1px 5px; border-radius: 5px; }
+@media (max-width: 720px) {
+  .frow { grid-template-columns: 1fr 1fr; }
+  .local-row .toggle { margin-left: 0; }
+}
