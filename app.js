@@ -23,6 +23,8 @@ const S = {
   fxSrc: store("fxSrc") || "com",
   range: 365,
   prefs: {},
+  cb: {},
+  hide: store("hide") === "1",
   filters: loadFilters(),
   sort: { k: "value", d: -1 },
 };
@@ -57,8 +59,10 @@ const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "
 // ------------------------------------------------------------------ formatação
 const fBRL = new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" });
 const fUSD = new Intl.NumberFormat("pt-BR", { style: "currency", currency: "USD" });
+const MASK = "•••••";
 function money(v, ccy = S.ccy) {
   if (v == null || !isFinite(v)) return "—";
+  if (S.hide) return (ccy === "BRL" ? "R$ " : "US$ ") + MASK;
   return (ccy === "BRL" ? fBRL : fUSD).format(v);
 }
 function price(v, ccy) {
@@ -68,6 +72,7 @@ function price(v, ccy) {
 }
 function qty(v) {
   if (v == null) return "—";
+  if (S.hide) return MASK;
   const d = v >= 1000 ? 2 : v >= 1 ? 4 : 8;
   return new Intl.NumberFormat("pt-BR", { maximumFractionDigits: d }).format(v);
 }
@@ -151,7 +156,14 @@ function cryptoRows(useFilters = false) {
       costUsd = (st.avg_cost_brl * r.amount) / rate();
       pnlUsd = p * r.amount - costUsd;
     }
-    return { ...r, price: p, value: p != null ? p * r.amount : null, ch: change24(r.sym), hidden: !!st.hidden, st, pnlUsd, costUsd };
+    const cb = S.cb[r.sym];
+    let avgSrc = st.avg_cost_usd || st.avg_cost_brl ? "manual" : null;
+    if (!avgSrc && cb && Number(cb.qty) > 0 && p != null) {
+      costUsd = (Number(cb.cost_usd) / Number(cb.qty)) * r.amount;
+      pnlUsd = p * r.amount - costUsd;
+      avgSrc = "binance";
+    }
+    return { ...r, price: p, value: p != null ? p * r.amount : null, ch: change24(r.sym), hidden: !!st.hidden, st, pnlUsd, costUsd, avgSrc, cb };
   });
 }
 function manualRows() {
@@ -226,14 +238,15 @@ function totals() {
 
 // ------------------------------------------------------------------ dados
 async function loadAll() {
-  const [w, h, m, st, tx, sn, pf] = await Promise.all([
+  const [w, h, m, st, tx, sn, pf, cb] = await Promise.all([
     sb.from("wallets").select("*").order("created_at"),
     sb.from("holdings").select("*"),
     sb.from("manual_assets").select("*").order("created_at"),
     sb.from("asset_settings").select("*"),
-    sb.from("transactions").select("*").order("ts", { ascending: false }).limit(500),
+    sb.from("transactions").select("*").order("ts", { ascending: false }).limit(3000),
     sb.from("snapshots").select("taken_at,total_usd,total_brl,usd_brl").order("taken_at").limit(5000),
     sb.from("user_prefs").select("*").maybeSingle(),
+    sb.from("cost_basis").select("*"),
   ]);
   for (const r of [w, h, m, st, tx, sn]) if (r.error) throw r.error;
   S.wallets = w.data;
@@ -243,6 +256,7 @@ async function loadAll() {
   S.txs = tx.data;
   S.snaps = sn.data;
   S.prefs = pf.data || {};
+  S.cb = Object.fromEntries((cb.data || []).map((c) => [c.symbol, c]));
   const last = S.holdings.reduce((m, x) => (x.updated_at > m ? x.updated_at : m), "");
   $("#last-sync").textContent = last ? `Saldos atualizados ${ago(last)}` : "Ainda não sincronizado";
   connectLive();
@@ -370,7 +384,7 @@ function renderPainel() {
         <td class="hide-sm">${qty(r.amount)}</td>
         <td>${dualUsd(r.value)}</td>
         <td class="hide-sm">${totalC && r.value && !r.hidden ? ((r.value / totalC) * 100).toFixed(1).replace(".", ",") + "%" : ""}</td>
-        <td class="hide-sm">${r.pnlUsd != null ? `${dualUsd(r.pnlUsd, money, true)}<div class="nets-small ${cls(r.pnlUsd)}">${r.costUsd ? pct(r.pnlUsd / r.costUsd) : ""}</div>` : '<span class="muted small">informar preço médio</span>'}</td>
+        <td class="hide-sm">${r.pnlUsd != null ? `${dualUsd(r.pnlUsd, money, true)}<div class="nets-small ${cls(r.pnlUsd)}">${r.costUsd ? pct(r.pnlUsd / r.costUsd) : ""}${r.avgSrc === "binance" ? ' <span class="muted" title="Preço médio calculado pelo histórico da Binance">· Binance</span>' : ""}</div>` : '<span class="muted small">sem preço médio</span>'}</td>
       </tr>`;
     })
     .join("");
@@ -543,6 +557,14 @@ function openAsset(sym, isB3 = false) {
       ["Quantidade", qty(r?.amount)],
       ["Valor", `${money(r?.value, "USD")}<div class="small muted">${money(r?.value != null && rate() ? r.value * rate() : null, "BRL")}</div>`],
     ].map(([k, v]) => `<div class="stat"><div class="muted small">${k}</div><div class="v">${v}</div></div>`).join("");
+    const cbx = S.cb[sym];
+    const avgUsd = cbx && Number(cbx.qty) ? Number(cbx.cost_usd) / Number(cbx.qty) : null;
+    const avgBrl = cbx && Number(cbx.qty) ? Number(cbx.cost_brl) / Number(cbx.qty) : null;
+    $("#d-avg-usd").placeholder = avgUsd ? `Binance: ${avgUsd.toFixed(avgUsd < 1 ? 6 : 2)}` : "";
+    $("#d-avg-brl").placeholder = avgBrl ? `Binance: ${avgBrl.toFixed(avgBrl < 1 ? 6 : 2)}` : "";
+    $("#d-cb").innerHTML = cbx
+      ? `<b>Preço médio pelo histórico da Binance:</b> ${price(avgUsd, "USD")} · ${price(avgBrl, "BRL")}<br><span class="muted small">${cbx.n_ops} operação(ões) de ${new Date(cbx.first_ts).toLocaleDateString("pt-BR")} a ${new Date(cbx.last_ts).toLocaleDateString("pt-BR")}; cobre ${qty(Number(cbx.qty))} unidade(s). Moedas que chegaram por depósito (vindas de outra carteira) não entram na conta. Se preencher os campos abaixo, o seu valor manual passa a valer.</span>`
+      : '<span class="muted small">Sem histórico de compra deste ativo na Binance. Você pode informar o preço médio à mão.</span>';
     $("#d-where").innerHTML = (r?.parts || [])
       .map((p) => `<div class="where"><span>${esc(p.source)} · <span class="muted">${esc(NET[p.network] || p.network)}</span></span><span>${qty(Number(p.amount))}</span></div>`)
       .join("") || '<p class="muted">—</p>';
@@ -573,22 +595,23 @@ function renderMovs() {
   const q = $("#mov-q").value.trim().toUpperCase();
   const prices = Object.fromEntries(cryptoRows().map((r) => [r.sym, r.price]));
   const list = S.txs.filter((t) => (!cur || t.wallet_id === cur) && (!dir || t.direction === dir) && (!q || (t.symbol || "").toUpperCase().includes(q)));
-  const dname = { in: "Entrada", out: "Saída", self: "Interna", trade: "Troca" };
+  const dname = { in: "Entrada", out: "Saída", self: "Interna", trade: "Troca", buy: "Compra", sell: "Venda" };
   $("#movs-table").innerHTML =
     `<tr><th>Data</th><th>Tipo</th><th>Ativo</th><th>Quantidade</th><th class="hide-sm">Valor hoje</th><th class="hide-sm">Carteira</th><th class="hide-sm">Contraparte</th><th></th></tr>` +
     (list
       .map((t) => {
         const p = livePrice((t.symbol || "").toUpperCase(), prices[(t.symbol || "").toUpperCase()]);
         const v = p != null && t.amount != null ? p * Number(t.amount) : null;
-        const cp = t.counterparty ? (t.counterparty.length > 26 ? t.counterparty.slice(0, 10) + "…" + t.counterparty.slice(-8) : t.counterparty) : "";
+        let cp = t.counterparty ? (t.counterparty.length > 26 && !t.quote_asset ? t.counterparty.slice(0, 10) + "…" + t.counterparty.slice(-8) : t.counterparty) : "";
+        if (t.quote_asset) cp += ` · ${qty(Number(t.quote_amount))} ${t.quote_asset}`;
         return `<tr>
           <td>${t.ts ? new Date(t.ts).toLocaleString("pt-BR", { dateStyle: "short", timeStyle: "short" }) : "—"}</td>
-          <td><span class="${t.direction === "in" ? "up" : t.direction === "out" ? "down" : ""}">${dname[t.direction] || t.direction}</span></td>
+          <td><span class="${t.direction === "in" || t.direction === "buy" ? "up" : t.direction === "out" || t.direction === "sell" ? "down" : ""}">${dname[t.direction] || t.direction}</span></td>
           <td><b>${esc(t.symbol || "")}</b> <span class="nets-small">${esc(NET[t.network] || t.network)}</span></td>
           <td>${qty(Number(t.amount))}</td>
           <td class="hide-sm">${dualUsd(v)}</td>
           <td class="hide-sm">${esc(t.source)}</td>
-          <td class="hide-sm"><span class="nets-small" title="${esc(t.counterparty || "")}">${esc(cp)}</span></td>
+          <td class="hide-sm"><span class="nets-small cp" title="${esc(t.counterparty || "")}">${esc(cp)}</span></td>
           <td>${t.url ? `<a href="${esc(t.url)}" target="_blank" rel="noopener">ver ↗</a>` : ""}</td>
         </tr>`;
       })
@@ -623,6 +646,7 @@ function renderCadastros() {
         <div class="grow"><b>${esc(w.label)}</b> <span class="muted small">${money(toCcy(v))}${last ? " · " + ago(last) : ""}</span>
           <div class="addr">${esc(w.address || "chave guardada no Supabase")}${w.kind === "evm" ? " · " + (w.networks || []).map((x) => NET[x] || x).join(", ") : ""}</div></div>
         <button class="btn small" data-act="sync" data-id="${w.id}">Atualizar</button>
+        ${w.kind === "binance" ? `<button class="btn small" data-act="hist" data-id="${w.id}">Importar histórico</button>` : ""}
         <button class="btn small ghost" data-act="toggle" data-id="${w.id}">${w.active ? "Desativar" : "Ativar"}</button>
         <button class="btn small ghost danger" data-act="del" data-id="${w.id}">Excluir</button>
       </div>`;
@@ -733,6 +757,30 @@ async function runSync(walletId) {
   }
 }
 
+// histórico da Binance (compras, vendas, convert, compras com reais) → preço médio
+async function runHist(btn) {
+  const rep = $("#sync-report");
+  btn && (btn.disabled = true);
+  rep.classList.remove("hidden");
+  rep.innerHTML = '<span class="muted">Importando o histórico da Binance… a primeira vez pode levar uns 2 minutos.</span>';
+  rep.scrollIntoView({ behavior: "smooth", block: "center" });
+  try {
+    const { data, error } = await sb.functions.invoke("historico", { body: {}, region: REGION });
+    if (error) {
+      let msg = error.message;
+      try { msg = (await error.context.json()).erro || msg; } catch { /* */ }
+      throw new Error(msg);
+    }
+    rep.innerHTML = `<div>✓ <b>Histórico da Binance</b>: ${data.operacoes} operação(ões) no total (novas agora: ${data.spot.novas} spot, ${data.convert.novas} convert, ${data.compras_com_reais.novas} compras/vendas com reais). Preço médio calculado para ${data.ativos_com_preco_medio} ativo(s).</div>` +
+      (data.completo ? `<div class="muted">Histórico lido desde ${new Date(data.historico_ate + "T12:00").toLocaleDateString("pt-BR")}.</div>` : `<div class="err">Ainda falta uma parte (lido até ${new Date(data.historico_ate + "T12:00").toLocaleDateString("pt-BR")}). Clique em "Importar histórico" de novo para continuar de onde parou.</div>`);
+    await loadAll();
+  } catch (e) {
+    rep.innerHTML = `<div class="err">Erro no histórico: ${esc(e.message)}</div>`;
+  } finally {
+    btn && (btn.disabled = false);
+  }
+}
+
 // ------------------------------------------------------------------ eventos
 function bind() {
   document.querySelectorAll(".tabs button").forEach((b) =>
@@ -756,6 +804,19 @@ function bind() {
       document.querySelectorAll("#range button").forEach((x) => x.classList.toggle("active", x === b));
       renderChart();
     }));
+  const applyEye = () => {
+    document.body.classList.toggle("privacy", S.hide);
+    $("#eye").innerHTML = S.hide ? EYE_OFF : EYE_ON;
+    $("#eye").title = S.hide ? "Mostrar valores" : "Ocultar valores";
+  };
+  applyEye();
+  $("#eye").addEventListener("click", () => {
+    S.hide = !S.hide;
+    store("hide", S.hide ? "1" : "0");
+    applyEye();
+    filtersBuilt = "";
+    renderAll();
+  });
   $("#fx").addEventListener("click", () => {
     S.fxSrc = S.fxSrc === "com" ? "usdt" : "com";
     store("fxSrc", S.fxSrc);
@@ -856,6 +917,7 @@ function bind() {
     if (!b) return;
     const w = S.wallets.find((x) => x.id === b.dataset.id);
     if (b.dataset.act === "sync") return runSync(w.id);
+    if (b.dataset.act === "hist") return runHist(b);
     if (b.dataset.act === "toggle") {
       await sb.from("wallets").update({ active: !w.active }).eq("id", w.id);
       w.active = !w.active;
@@ -947,6 +1009,9 @@ function confirmBox(text) {
     document.body.appendChild(d);
   });
 }
+
+const EYE_ON = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>';
+const EYE_OFF = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 19c-6.5 0-10-7-10-7a18.5 18.5 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c6.5 0 10 7 10 7a18.5 18.5 0 0 1-2.16 3.19M1 1l22 22"/><path d="M14.12 14.12a3 3 0 1 1-4.24-4.24"/></svg>';
 
 // ------------------------------------------------------------------ login
 async function start() {

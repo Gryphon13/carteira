@@ -40,6 +40,7 @@
           <div><span class="muted">Dólar comercial</span> <b id="fx-com">—</b></div>
           <div><span class="muted">USDT/BRL ao vivo</span> <b id="fx-usdt">—</b></div>
         </div>
+        <button id="eye" class="btn ghost small icon" type="button" title="Ocultar valores"></button>
         <div class="seg" id="ccy">
           <button data-ccy="BRL" class="active">R$</button>
           <button data-ccy="USD">US$</button>
@@ -132,7 +133,7 @@
           <h2>Movimentações</h2>
           <div class="filters">
             <select id="mov-wallet"><option value="">Todas as carteiras</option></select>
-            <select id="mov-dir"><option value="">Entradas e saídas</option><option value="in">Entradas</option><option value="out">Saídas</option></select>
+            <select id="mov-dir"><option value="">Todos os tipos</option><option value="buy">Compras</option><option value="sell">Vendas</option><option value="in">Entradas</option><option value="out">Saídas</option></select>
             <input id="mov-q" placeholder="Filtrar ativo…" />
           </div>
         </div>
@@ -225,6 +226,7 @@
         </div>
         <form id="d-form" class="form compact">
           <h3>Preço médio e gráfico</h3>
+          <p id="d-cb" class="small"></p>
           <div class="row">
             <label>Preço médio (US$)<input id="d-avg-usd" type="number" step="any" min="0" /></label>
             <label>Preço médio (R$)<input id="d-avg-brl" type="number" step="any" min="0" /></label>

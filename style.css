@@ -169,3 +169,7 @@ code { font-family: var(--mono); font-size: 11px; background: var(--panel-2); pa
   .frow { grid-template-columns: 1fr 1fr; }
   .local-row .toggle { margin-left: 0; }
 }
+
+/* Modo privado (olhinho) */
+.btn.icon { padding: 6px 8px; }
+.privacy .addr, .privacy .cp { filter: blur(5px); }
