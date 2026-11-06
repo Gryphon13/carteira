@@ -1109,7 +1109,7 @@ function renderChart() {
     chart = LightweightCharts.createChart(el, {
       ...chartOpts(),
       rightPriceScale: { borderVisible: false },
-      timeScale: { borderVisible: false, timeVisible: true },
+      timeScale: { borderVisible: false, timeVisible: true, minBarSpacing: 0.05 },
       localization: { locale: "pt-BR", priceFormatter: (v) => money(v) },
       autoSize: true,
     });
