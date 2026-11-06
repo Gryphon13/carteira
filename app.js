@@ -1915,7 +1915,7 @@ function classifyCryptoCom(cryptoRows, cashRows) {
   const month = (t) => new Date(t).toISOString().slice(0, 7);
   const txs = [], bal = new Map(), income = new Map(), lastTs = new Map();
   const addBal = (c, v) => c && c !== "BRL" && bal.set(c, (bal.get(c) || 0) + v);
-  const tx = (o) => txs.push({ ...o, ts: new Date(o.t).toISOString(), t: undefined });
+  const tx = ({ t, ...o }) => txs.push({ url: null, quote_asset: null, quote_amount: null, ...o, ts: new Date(t).toISOString() });
   const swapPend = new Map();
   let n = 0;
   for (const r of cryptoRows) {
@@ -2008,6 +2008,7 @@ async function importCryptoCom(files) {
     const { data, error } = await sb.from("wallets").insert({ user_id: S.user.id, kind: "cryptocom", label: "Crypto.com", address: "extrato", networks: [], active: true }).select().single();
     if (error) { rep.innerHTML = `<div class="err">Erro ao criar a carteira: ${esc(error.message)}</div>`; return; }
     w = data;
+    S.wallets.push(w);
   }
   await sb.from("wallets").update({ meta: { ...(w.meta || {}), saldos: res.saldos, importado_em: new Date().toISOString() } }).eq("id", w.id);
   const txs = res.txs.map((t) => ({ ...t, user_id: S.user.id, wallet_id: w.id, source: w.label, network: "cryptocom" }));
