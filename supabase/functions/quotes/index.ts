@@ -70,7 +70,8 @@ async function info(sym: string) {
   const SINCE = Date.UTC(2009, 0, 1) / 1000;
   ts.forEach((t, i) => {
     if (t < SINCE) return;
-    const hi = q.high?.[i] ?? close[i], lo = q.low?.[i] ?? close[i];
+    // fechamentos mensais: as máximas/mínimas intradiárias do Yahoo às vezes trazem negócios fora da curva
+    const hi = close[i], lo = close[i];
     if (hi != null && (ath == null || hi > ath)) { ath = hi; athDate = t; }
     if (lo != null && lo > 0 && (atl == null || lo < atl)) { atl = lo; atlDate = t; }
   });

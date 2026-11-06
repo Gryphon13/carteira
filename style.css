@@ -329,3 +329,5 @@ details.about[open] summary .lnk { display: none; }
   .tabs button { padding: 6px 10px; }
   .top { padding: 10px 12px; }
 }
+.stat .v { white-space: nowrap; }
+.stat .v .sub2, .stat .v .small { white-space: nowrap; }

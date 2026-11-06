@@ -973,7 +973,7 @@ async function renderInfo() {
           <div class="kv"><span>Em circulação</span><b>${units(circ)} ${esc(String(j.symbol || "").toUpperCase())}</b></div>
           <div class="kv"><span>Fornecimento total</span><b>${units(tot)}</b></div>
           <div class="kv"><span>Fornecimento máximo</span><b>${md.max_supply_infinite ? "∞ sem limite" : units(max)}</b></div>
-          ${circPct ? `<div class="bar"><i style="width:${Math.min(100, circPct * 100).toFixed(1)}%;background:var(--accent)"></i></div><div class="muted small">${(circPct * 100).toFixed(1)}% do ${max ? "máximo" : "total"} já está em circulação</div>` : ""}
+          ${circPct ? `<div class="bar"><i style="width:${Math.min(100, circPct * 100).toFixed(1)}%;background:var(--accent)"></i></div><div class="muted small">${(circPct * 100).toLocaleString("pt-BR", { maximumFractionDigits: 1 })}% do ${max ? "máximo" : "total"} já está em circulação</div>` : ""}
         </div>
         <div class="info-box">
           <h3>Recordes de preço</h3>
@@ -1027,10 +1027,10 @@ async function renderInfoB3(el, sym) {
     ].map(statBox).join("")}</div>
     <div class="info-grid">
       <div class="info-box">
-        <h3>Recordes de preço desde 2009</h3>
-        <div class="kv"><span>Máxima histórica</span><b>${price(i.ath, "BRL")}</b></div>
+        <h3>Recordes desde 2009 (fechamento mensal)</h3>
+        <div class="kv"><span>Maior fechamento</span><b>${price(i.ath, "BRL")}</b></div>
         <div class="kv"><span>em</span><b>${i.athDate ? new Date(i.athDate * 1000).toLocaleDateString("pt-BR", { month: "long", year: "numeric" }) : "—"} <span class="pct ${cls(fromAth)}">${fromAth != null ? pct(fromAth) + " desde lá" : ""}</span></b></div>
-        <div class="kv"><span>Mínima histórica</span><b>${price(i.atl, "BRL")}</b></div>
+        <div class="kv"><span>Menor fechamento</span><b>${price(i.atl, "BRL")}</b></div>
         <div class="kv"><span>em</span><b>${i.atlDate ? new Date(i.atlDate * 1000).toLocaleDateString("pt-BR", { month: "long", year: "numeric" }) : "—"}</b></div>
       </div>
       <div class="info-box">
