@@ -66,7 +66,10 @@ async function info(sym: string) {
   const q: any = res?.indicators?.quote?.[0] || {};
   const close: (number | null)[] = q.close || [];
   let ath: number | null = null, athDate: number | null = null, atl: number | null = null, atlDate: number | null = null;
+  // antes de 2009 os dados mensais do Yahoo não estão ajustados por desdobramentos (ex.: PETR4 em 2008)
+  const SINCE = Date.UTC(2009, 0, 1) / 1000;
   ts.forEach((t, i) => {
+    if (t < SINCE) return;
     const hi = q.high?.[i] ?? close[i], lo = q.low?.[i] ?? close[i];
     if (hi != null && (ath == null || hi > ath)) { ath = hi; athDate = t; }
     if (lo != null && lo > 0 && (atl == null || lo < atl)) { atl = lo; atlDate = t; }
@@ -81,7 +84,7 @@ async function info(sym: string) {
     name: m.longName || m.shortName || null, exchange: m.fullExchangeName || m.exchangeName || null, currency: m.currency,
     price: px, prev: m.chartPreviousClose ?? m.previousClose, dayHigh: m.regularMarketDayHigh ?? null, dayLow: m.regularMarketDayLow ?? null,
     w52High: m.fiftyTwoWeekHigh ?? null, w52Low: m.fiftyTwoWeekLow ?? null, volume: m.regularMarketVolume ?? null,
-    ath, athDate, atl, atlDate, first: ts[0] ?? null, r1m: back(1), r1y: back(12), r5y: back(60),
+    ath, athDate, atl, atlDate, since: SINCE, first: ts[0] ?? null, r1m: back(1), r1y: back(12), r5y: back(60),
   };
 }
 

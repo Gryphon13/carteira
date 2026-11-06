@@ -1027,7 +1027,7 @@ async function renderInfoB3(el, sym) {
     ].map(statBox).join("")}</div>
     <div class="info-grid">
       <div class="info-box">
-        <h3>Recordes de preço (fechamento mensal)</h3>
+        <h3>Recordes de preço desde 2009</h3>
         <div class="kv"><span>Máxima histórica</span><b>${price(i.ath, "BRL")}</b></div>
         <div class="kv"><span>em</span><b>${i.athDate ? new Date(i.athDate * 1000).toLocaleDateString("pt-BR", { month: "long", year: "numeric" }) : "—"} <span class="pct ${cls(fromAth)}">${fromAth != null ? pct(fromAth) + " desde lá" : ""}</span></b></div>
         <div class="kv"><span>Mínima histórica</span><b>${price(i.atl, "BRL")}</b></div>
