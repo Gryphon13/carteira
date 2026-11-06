@@ -147,8 +147,8 @@ async function loadMarkets() {
   if (!stale.length) return;
   cgBusy = true;
   try {
-    for (let i = 0; i < stale.length; i += 60) {
-      const part = stale.slice(i, i + 60);
+    for (let i = 0; i < stale.length; i += 40) {
+      const part = stale.slice(i, i + 40); // CoinGecko aceita até 50 símbolos por consulta
       const r = await fetch(`${CG}/coins/markets?vs_currency=usd&include_tokens=top&per_page=250&symbols=${part.map((x) => x.toLowerCase()).join(",")}`);
       if (!r.ok) break;
       const list = await r.json();
