@@ -333,3 +333,19 @@ details.about[open] summary .lnk { display: none; }
 .stat .v .sub2, .stat .v .small { white-space: nowrap; }
 /* widgets do TradingView: sem fundo branco no tema escuro */
 .tradingview-widget-container iframe { color-scheme: light; }
+
+/* Ferramentas dos cards (período, cor, exportar) */
+.chart-tools { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.pop-wrap { position: relative; }
+#color-btn .dot { display: block; width: 16px; height: 16px; border-radius: 50%; background: var(--chart); box-shadow: 0 0 0 2px var(--panel), 0 0 0 3px var(--line-2); }
+.pop { position: absolute; right: 0; top: calc(100% + 8px); z-index: 20; width: 250px; background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 14px; display: grid; gap: 10px; box-shadow: 0 12px 32px rgba(0, 0, 0, .28); }
+.swatches { display: grid; grid-template-columns: repeat(8, 1fr); gap: 6px; }
+.sw { width: 100%; aspect-ratio: 1; border-radius: 50%; border: 0; cursor: pointer; box-shadow: 0 0 0 2px var(--panel), 0 0 0 3px transparent; }
+.sw.on, .sw:hover { box-shadow: 0 0 0 2px var(--panel), 0 0 0 4px var(--text); }
+.color-custom { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.color-custom input { width: 44px; height: 30px; padding: 2px; border-radius: 8px; cursor: pointer; }
+#chart-note { margin: 8px 0 0; }
+
+/* Exportar composição */
+.export-card { max-width: 560px; }
+.x-img { width: 100%; height: auto; border-radius: 14px; border: 1px solid var(--line); background: var(--panel-2); min-height: 200px; }

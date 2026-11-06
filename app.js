@@ -21,7 +21,8 @@ const S = {
   b3: {},
   ccy: store("ccy") || "BRL",
   fxSrc: store("fxSrc") || "com",
-  range: 365,
+  range: Number(store("range") ?? 0) || 0,
+  hist: null, // evolução reconstruída: [{ time, usd, brl }]
   prefs: {},
   cb: {},
   flags: {},
@@ -312,13 +313,24 @@ function totals() {
 }
 
 // ------------------------------------------------------------------ dados
+// o Supabase devolve no máximo 1000 linhas por consulta: busca em páginas
+async function allRows(make) {
+  const out = [];
+  for (let from = 0; from < 50000; from += 1000) {
+    const { data, error } = await make().range(from, from + 999);
+    if (error) return { data: null, error };
+    out.push(...data);
+    if (data.length < 1000) break;
+  }
+  return { data: out, error: null };
+}
 async function loadAll() {
   const [w, h, m, st, tx, sn, pf, cb, fl, op] = await Promise.all([
     sb.from("wallets").select("*").order("created_at"),
     sb.from("holdings").select("*"),
     sb.from("manual_assets").select("*").order("created_at"),
     sb.from("asset_settings").select("*"),
-    sb.from("transactions").select("*").order("ts", { ascending: false }).limit(3000),
+    allRows(() => sb.from("transactions").select("*").order("ts", { ascending: false }).order("id")),
     sb.from("snapshots").select("taken_at,total_usd,total_brl,usd_brl").order("taken_at").limit(5000),
     sb.from("user_prefs").select("*").maybeSingle(),
     sb.from("cost_basis").select("*"),
@@ -342,6 +354,7 @@ async function loadAll() {
   await loadQuotes();
   renderAll();
   loadMarkets();
+  computeHistory().catch((e) => console.warn("histórico", e));
 }
 
 async function loadQuotes() {
@@ -607,7 +620,7 @@ function pieHover(i) {
 
 const isSpamSym = (sym) => {
   const u = String(sym || "").toUpperCase();
-  return S.holdings.some((h) => h.symbol === u && holdingFlag(h) === "spam") || /[\s#$:/]|\.(io|com|org|net|app|xyz)$/i.test(u) ? "spam" : null;
+  return (S.holdings.some((h) => h.symbol === u && holdingFlag(h) === "spam") && !S.holdings.some((h) => h.symbol === u && !holdingFlag(h))) || /[\s#$:/]|\.(io|com|org|net|app|xyz)$/i.test(u) ? "spam" : null;
 };
 // trocas on-chain: na mesma transação saiu um token e entrou outro
 let swapIdx = null, swapIdxLen = -1;
@@ -730,6 +743,292 @@ function setTheme(t) {
   if (lastAdv && !$("#modal").classList.contains("hidden") && $("#d-chart").innerHTML) advChart(lastAdv.tv, lastAdv.interval);
 }
 
+// ------------------------------------------------------------------ evolução reconstruída pelas movimentações
+// Parte do saldo de hoje e "desfaz" cada movimentação, do presente para o passado,
+// valorizando o saldo de cada dia pelo fechamento diário da Binance (US$) e do USDT/BRL.
+const DAY = 86400e3;
+const KLINES = "https://data-api.binance.vision/api/v3/klines";
+const kCache = new Map();
+function kLoad(pair) {
+  if (kCache.has(pair)) return kCache.get(pair);
+  try { return JSON.parse(localStorage.getItem("carteira.k." + pair) || "null"); } catch { return null; }
+}
+function kSave(pair, v) {
+  kCache.set(pair, v);
+  try { localStorage.setItem("carteira.k." + pair, JSON.stringify(v)); } catch { /* armazenamento cheio: fica só na memória */ }
+}
+async function dailyCloses(pair, from) {
+  const today = Math.floor(Date.now() / DAY) * DAY;
+  let k = kLoad(pair);
+  if (k?.none) { if (Date.now() - k.at < 7 * DAY) return null; k = null; }
+  if (k && k.from > from) k = null; // precisa de mais passado
+  if (k && k.at > Date.now() - 6 * 3600e3 && k.d0 + (k.c.length - 1) * DAY >= today - DAY) return k;
+  if (!k) k = { from, d0: null, c: [] };
+  let start = k.d0 != null ? k.d0 + Math.max(0, k.c.length - 2) * DAY : from;
+  for (let guard = 0; guard < 10 && start <= today; guard++) {
+    const r = await fetch(`${KLINES}?symbol=${pair}&interval=1d&startTime=${start}&limit=1000`);
+    if (r.status === 400) break; // par não existe
+    if (!r.ok) throw new Error(`Binance ${r.status}`);
+    const rows = await r.json();
+    if (!rows.length) break;
+    for (const x of rows) {
+      if (k.d0 == null) k.d0 = x[0];
+      k.c[Math.round((x[0] - k.d0) / DAY)] = Number(Number(x[4]).toPrecision(6));
+    }
+    start = rows[rows.length - 1][0] + DAY;
+    if (rows.length < 1000) break;
+  }
+  if (k.d0 == null) { kSave(pair, { none: 1, at: Date.now() }); return null; }
+  for (let i = 1; i < k.c.length; i++) if (k.c[i] == null) k.c[i] = k.c[i - 1];
+  k.at = Date.now();
+  kSave(pair, k);
+  return k;
+}
+const closeAt = (k, day) => {
+  if (!k) return null;
+  const i = Math.round((day - k.d0) / DAY);
+  if (i < 0) return null;
+  return k.c[Math.min(i, k.c.length - 1)];
+};
+async function pool(items, n, fn) {
+  let i = 0;
+  await Promise.all(Array.from({ length: n }, async () => { while (i < items.length) { const x = items[i++]; await fn(x); } }));
+}
+let histBusy = false;
+async function computeHistory() {
+  if (histBusy) return;
+  histBusy = true;
+  try {
+    const note = $("#chart-note");
+    const valid = (x) => /^[A-Z0-9]{2,10}$/.test(x) && !isSpamSym(x) && !S.settings[x]?.hidden;
+    const okSyms = new Set(S.holdings.filter((h) => !holdingFlag(h)).map((h) => h.symbol));
+    const flaggedSyms = new Set(S.holdings.filter((h) => holdingFlag(h) && !okSyms.has(h.symbol)).map((h) => h.symbol));
+    // saldo de hoje por ativo
+    const bal = new Map();
+    for (const r of cryptoRows()) if (valid(r.sym)) bal.set(r.sym, r.amount);
+    // movimentações (sem duplicar depósitos/saques da Binance que vieram pela API e pelo extrato)
+    const seen = new Set(), list = [];
+    for (const t of S.txs) {
+      const sym = (t.symbol || "").toUpperCase();
+      if (!t.ts || !["in", "out", "buy", "sell"].includes(t.direction) || !valid(sym) || flaggedSyms.has(sym)) continue;
+      if (t.network === "binance" && (t.direction === "in" || t.direction === "out")) {
+        const key = `${sym}|${t.direction}|${Number(t.amount).toPrecision(6)}|${Math.round(new Date(t.ts).getTime() / 3600e3)}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+      }
+      list.push({ ...t, sym, q: (t.quote_asset || "").toUpperCase(), ms: new Date(t.ts).getTime() });
+    }
+    const opsB3 = S.ops.filter((o) => o.op_date);
+    const firstMs = Math.min(...list.map((t) => t.ms), ...opsB3.map((o) => new Date(o.op_date + "T12:00:00Z").getTime()), Date.now());
+    const first = Math.floor(firstMs / DAY) * DAY;
+    const today = Math.floor(Date.now() / DAY) * DAY;
+    if (today - first < 3 * DAY) return;
+    note.classList.remove("hidden");
+    note.textContent = "Reconstruindo a evolução com as cotações de cada dia…";
+    const syms = new Set([...bal.keys(), ...list.map((t) => t.sym), ...list.map((t) => t.q).filter((q) => q && valid(q))]);
+    const K = {};
+    const usdt = await dailyCloses("USDTBRL", first);
+    const toFetch = [...syms].filter((x) => !STABLE.has(x) && x !== "BRL");
+    await pool(toFetch, 4, async (x) => { K[x] = await dailyCloses(x + "USDT", first).catch(() => null); });
+    const pxUsd = (x, day) => (STABLE.has(x) ? 1 : x === "BRL" ? (closeAt(usdt, day) ? 1 / closeAt(usdt, day) : null) : closeAt(K[x], day));
+    // B3: fechamentos diários desde a primeira compra
+    const b3 = S.manual.filter((a) => a.kind === "b3");
+    const B = {};
+    await pool(b3, 2, async (a) => {
+      const ops = opsOf(a.id);
+      if (!ops.length) return;
+      const { data } = await sb.functions.invoke("quotes", { body: { history: a.symbol, from: ops[0].op_date }, region: REGION }).catch(() => ({}));
+      const m = new Map();
+      for (const p of data?.pontos || []) m.set(Math.floor((p.t * 1000) / DAY) * DAY, p.c);
+      B[a.id] = { m, ops };
+    });
+    // percorre do presente para o passado
+    list.sort((a, b) => b.ms - a.ms);
+    const add = (x, v) => syms.has(x) && bal.set(x, (bal.get(x) || 0) + v);
+    let idx = 0;
+    const pts = [];
+    const lastB3 = {};
+    const days = [];
+    for (let d = first; d <= today; d += DAY) days.push(d);
+    const b3Brl = new Map(); // valor da B3 por dia (calculado para frente)
+    for (const [id, b] of Object.entries(B)) {
+      let qtyNow = 0, oi = 0, px = null;
+      for (const d of days) {
+        while (oi < b.ops.length && new Date(b.ops[oi].op_date + "T00:00:00Z").getTime() < d + DAY) {
+          const o = b.ops[oi++];
+          qtyNow += (o.kind === "buy" ? 1 : -1) * Number(o.quantity);
+          px ??= Number(o.price);
+        }
+        if (b.m.has(d)) px = b.m.get(d);
+        if (qtyNow > 0 && px) b3Brl.set(d, (b3Brl.get(d) || 0) + qtyNow * px);
+      }
+      lastB3[id] = px;
+    }
+    const rf = manualRows().filter((a) => a.kind !== "b3");
+    for (let di = days.length - 1; di >= 0; di--) {
+      const d = days[di];
+      while (idx < list.length && list[idx].ms >= d + DAY) {
+        const t = list[idx++];
+        const a = Number(t.amount) || 0, qa = Number(t.quote_amount) || 0;
+        if (t.direction === "in") add(t.sym, -a);
+        else if (t.direction === "out") add(t.sym, a);
+        else if (t.direction === "buy") { add(t.sym, -a); if (t.q) add(t.q, qa); }
+        else if (t.direction === "sell") { add(t.sym, a); if (t.q) add(t.q, -qa); }
+      }
+      let usd = 0;
+      for (const [x, q] of bal) {
+        if (!(q > 0)) continue;
+        const p = pxUsd(x, d);
+        if (p) usd += q * p;
+      }
+      const fx = closeAt(usdt, d) || rate();
+      let brl = usd * fx;
+      const extra = (b3Brl.get(d) || 0) + rf.reduce((s2, a) => {
+        const start = a.start_date || opsOf(a.id)[0]?.op_date;
+        return start && new Date(start + "T00:00:00Z").getTime() <= d ? s2 + (a.costBrl ?? a.valueBrl ?? 0) : s2;
+      }, 0);
+      brl += extra;
+      usd += fx ? extra / fx : 0;
+      pts.push({ time: d / 1000, usd, brl });
+    }
+    pts.reverse();
+    // descarta o começo em que ainda não havia nada
+    while (pts.length > 2 && pts[0].brl < 1) pts.shift();
+    S.hist = pts;
+    const semPreco = toFetch.filter((x) => !K[x] && (bal.get(x) || list.some((t) => t.sym === x)));
+    note.textContent = `Reconstruído desde ${new Date(pts[0].time * 1000).toLocaleDateString("pt-BR")} com ${list.length} movimentações e o fechamento de cada dia (Binance para cripto, Yahoo para a B3).`
+      + (semPreco.length ? ` Sem cotação histórica na Binance (ficam fora do passado): ${semPreco.slice(0, 12).join(", ")}${semPreco.length > 12 ? "…" : ""}.` : "");
+    renderChart();
+  } finally {
+    histBusy = false;
+  }
+}
+
+// ------------------------------------------------------------------ cor do gráfico
+const SWATCHES = ["#f5a524", "#3987e5", "#16c784", "#9085e9", "#e5578f", "#14b8a6", "#ef4444", "#8e8e99"];
+function contrastText(hex) {
+  const n = parseInt(hex.slice(1), 16);
+  const [r, g, b] = [(n >> 16) & 255, (n >> 8) & 255, n & 255].map((v) => { v /= 255; return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4; });
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b > 0.35 ? "#14110a" : "#ffffff";
+}
+function applyColors() {
+  const root = document.documentElement.style;
+  const c = store("chartColor");
+  const all = store("colorAll") === "1";
+  for (const v of ["--chart", "--accent", "--accent-2", "--link", "--on-accent"]) root.removeProperty(v);
+  if (c) {
+    root.setProperty("--chart", c);
+    if (all) {
+      root.setProperty("--accent", c);
+      root.setProperty("--accent-2", c);
+      root.setProperty("--link", c);
+      root.setProperty("--on-accent", contrastText(c));
+    }
+  }
+  const cur = cssVar("--chart");
+  $("#color-btn .dot").style.background = cur;
+  $("#color-input").value = /^#[0-9a-f]{6}$/i.test(cur) ? cur : "#f5a524";
+  $("#color-all").checked = all;
+  $("#swatches").innerHTML = SWATCHES.map((x) => `<button type="button" class="sw ${x.toLowerCase() === cur.toLowerCase() ? "on" : ""}" data-c="${x}" style="background:${x}" title="${x}"></button>`).join("");
+  if (series) series.applyOptions(areaOpts(cur));
+}
+function setChartColor(c) {
+  if (c) store("chartColor", c);
+  else { try { localStorage.removeItem("carteira.chartColor"); } catch { /* */ } }
+  applyColors();
+}
+
+// ------------------------------------------------------------------ exportar a pizza (só porcentagens)
+function roundRect(x, X, Y, W, H, R) {
+  x.beginPath();
+  x.moveTo(X + R, Y); x.arcTo(X + W, Y, X + W, Y + H, R); x.arcTo(X + W, Y + H, X, Y + H, R); x.arcTo(X, Y + H, X, Y, R); x.arcTo(X, Y, X + W, Y, R);
+  x.closePath();
+}
+async function pieImage(mode, th) {
+  const saved = S.pieMode;
+  S.pieMode = mode;
+  const data = pieData();
+  S.pieMode = saved;
+  const total = data.reduce((s2, d) => s2 + d.brl, 0);
+  const C = th === "light"
+    ? { bg: "#f4f5f7", card: "#ffffff", line: "#e4e6eb", text: "#16171b", muted: "#6a6f7c" }
+    : { bg: "#0b0b0d", card: "#151518", line: "#26262c", text: "#f3f3f5", muted: "#8e8e99" };
+  await document.fonts?.ready;
+  const W = 1080, rows = data.length, legendH = rows * 64 + (data.some((d) => d.other) ? 70 : 0);
+  const H = 160 + 640 + legendH + 120;
+  const cv = document.createElement("canvas");
+  cv.width = W; cv.height = H;
+  const x = cv.getContext("2d");
+  x.fillStyle = C.bg; x.fillRect(0, 0, W, H);
+  x.fillStyle = C.card; roundRect(x, 40, 40, W - 80, H - 80, 36); x.fill();
+  x.strokeStyle = C.line; x.lineWidth = 2; x.stroke();
+  x.fillStyle = C.text; x.font = "700 52px Inter, sans-serif"; x.textBaseline = "alphabetic";
+  x.fillText("Composição da carteira", 96, 140);
+  x.fillStyle = C.muted; x.font = "400 30px Inter, sans-serif";
+  x.fillText(`${new Date().toLocaleDateString("pt-BR", { day: "numeric", month: "long", year: "numeric" })} · ${mode === "ativo" ? "por ativo" : "por onde está"}`, 96, 190);
+  // rosca
+  const cx = W / 2, cy = 520, R = 260, r0 = 160;
+  let a = -Math.PI / 2;
+  for (const d of data) {
+    const f = d.brl / total, a1 = a + f * Math.PI * 2;
+    x.beginPath(); x.arc(cx, cy, R, a, a1); x.arc(cx, cy, r0, a1, a, true); x.closePath();
+    x.fillStyle = d.color; x.fill();
+    x.strokeStyle = C.card; x.lineWidth = 4; x.stroke();
+    if (f >= 0.05) {
+      const m = (a + a1) / 2, rr = (R + r0) / 2;
+      x.fillStyle = "#ffffff"; x.font = "700 28px Inter, sans-serif"; x.textAlign = "center"; x.textBaseline = "middle";
+      x.fillText(`${Math.round(f * 100)}%`, cx + rr * Math.cos(m), cy + rr * Math.sin(m));
+    }
+    a = a1;
+  }
+  x.textAlign = "center"; x.textBaseline = "middle";
+  x.fillStyle = C.text; x.font = "700 56px Inter, sans-serif";
+  x.fillText(String(mode === "ativo" ? data.reduce((n, d) => n + (d.other ? d.other.length : 1), 0) : data.length), cx, cy - 14);
+  x.fillStyle = C.muted; x.font = "400 26px Inter, sans-serif";
+  x.fillText(mode === "ativo" ? "ativos" : "lugares", cx, cy + 34);
+  // legenda
+  x.textAlign = "left"; x.textBaseline = "middle";
+  let y = 860;
+  for (const d of data) {
+    x.fillStyle = d.color; roundRect(x, 110, y - 14, 28, 28, 7); x.fill();
+    x.fillStyle = C.text; x.font = "600 32px Inter, sans-serif";
+    x.fillText(d.name, 160, y);
+    const pc = `${((d.brl / total) * 100).toFixed(1).replace(".", ",")}%`;
+    x.textAlign = "right"; x.font = "500 32px 'JetBrains Mono', monospace"; x.fillText(pc, W - 110, y); x.textAlign = "left";
+    // barrinha
+    x.fillStyle = C.line; roundRect(x, 160, y + 24, W - 270, 8, 4); x.fill();
+    x.fillStyle = d.color; roundRect(x, 160, y + 24, Math.max(8, (W - 270) * (d.brl / total)), 8, 4); x.fill();
+    y += 64;
+  }
+  const other = data.find((d) => d.other);
+  if (other) {
+    x.fillStyle = C.muted; x.font = "400 24px Inter, sans-serif";
+    let line = "Outros: ", ly = y + 4;
+    for (const n of other.other) {
+      if (x.measureText(line + n + ", ").width > W - 220) { x.fillText(line, 110, ly); line = ""; ly += 32; }
+      line += n + ", ";
+    }
+    x.fillText(line.replace(/, $/, ""), 110, ly);
+  }
+  x.fillStyle = C.muted; x.font = "400 22px Inter, sans-serif"; x.textAlign = "center";
+  x.fillText("Porcentagens do patrimônio · valores não exibidos", W / 2, H - 80);
+  return cv;
+}
+let xMode = "ativo", xTheme = "dark", xBlob = null;
+async function renderExport() {
+  document.querySelectorAll("#x-mode button").forEach((b) => b.classList.toggle("active", b.dataset.m === xMode));
+  document.querySelectorAll("#x-theme button").forEach((b) => b.classList.toggle("active", b.dataset.t === xTheme));
+  const cv = await pieImage(xMode, xTheme);
+  const url = cv.toDataURL("image/png");
+  $("#x-img").src = url;
+  $("#x-download").href = url;
+  $("#x-download").download = `composicao-carteira-${new Date().toISOString().slice(0, 10)}.png`;
+  xBlob = await new Promise((r) => cv.toBlob(r, "image/png"));
+  const file = new File([xBlob], "composicao-carteira.png", { type: "image/png" });
+  $("#x-share").classList.toggle("hidden", !(navigator.canShare && navigator.canShare({ files: [file] })));
+  $("#x-copy").classList.toggle("hidden", !(navigator.clipboard && window.ClipboardItem));
+}
+
 // gráfico do patrimônio
 let chart, series;
 function renderChart() {
@@ -747,6 +1046,17 @@ function renderChart() {
   }
   const since = S.range ? Date.now() - S.range * 86400e3 : 0;
   const pts = [];
+  if (S.hist?.length) {
+    const t = totals();
+    for (const h of S.hist) if (h.time * 1000 >= since - 86400e3) pts.push({ time: h.time, value: S.ccy === "BRL" ? h.brl : h.usd });
+    // último ponto = patrimônio de agora (preços ao vivo)
+    const now = S.ccy === "BRL" ? t.totalBrl : t.totalUsd;
+    if (now != null && pts.length) pts[pts.length - 1] = { time: pts[pts.length - 1].time, value: now };
+    series.setData(pts);
+    chart.timeScale().fitContent();
+    $("#chart-empty").classList.add("hidden");
+    return;
+  }
   for (const s of S.snaps) {
     const t = new Date(s.taken_at).getTime();
     if (t < since) continue;
@@ -1562,11 +1872,40 @@ function bind() {
   document.querySelectorAll("#range button").forEach((b) =>
     b.addEventListener("click", () => {
       S.range = Number(b.dataset.r);
+      store("range", String(S.range));
       document.querySelectorAll("#range button").forEach((x) => x.classList.toggle("active", x === b));
       renderChart();
     }));
   setTheme(theme());
-  $("#theme").addEventListener("click", () => setTheme(theme() === "light" ? "dark" : "light"));
+  applyColors();
+  $("#theme").addEventListener("click", () => { setTheme(theme() === "light" ? "dark" : "light"); applyColors(); });
+  document.querySelectorAll("#range button").forEach((x) => x.classList.toggle("active", Number(x.dataset.r) === S.range));
+  $("#color-btn").addEventListener("click", (e) => { e.stopPropagation(); $("#color-pop").classList.toggle("hidden"); });
+  document.addEventListener("click", (e) => { if (!e.target.closest(".pop-wrap")) $("#color-pop").classList.add("hidden"); });
+  $("#swatches").addEventListener("click", (e) => { const b = e.target.closest("[data-c]"); if (b) setChartColor(b.dataset.c); });
+  $("#color-input").addEventListener("input", (e) => setChartColor(e.target.value));
+  $("#color-all").addEventListener("change", (e) => { store("colorAll", e.target.checked ? "1" : "0"); applyColors(); });
+  $("#color-reset").addEventListener("click", () => { store("colorAll", "0"); setChartColor(null); });
+  $("#pie-export").addEventListener("click", () => {
+    xMode = S.pieMode; xTheme = theme();
+    $("#export-modal").classList.remove("hidden");
+    renderExport();
+  });
+  $("#x-close").addEventListener("click", () => $("#export-modal").classList.add("hidden"));
+  $("#export-modal").addEventListener("click", (e) => { if (e.target.id === "export-modal") $("#export-modal").classList.add("hidden"); });
+  $("#x-mode").addEventListener("click", (e) => { const b = e.target.closest("[data-m]"); if (b) { xMode = b.dataset.m; renderExport(); } });
+  $("#x-theme").addEventListener("click", (e) => { const b = e.target.closest("[data-t]"); if (b) { xTheme = b.dataset.t; renderExport(); } });
+  $("#x-share").addEventListener("click", () => {
+    const file = new File([xBlob], "composicao-carteira.png", { type: "image/png" });
+    navigator.share({ files: [file], title: "Composição da carteira" }).catch(() => {});
+  });
+  $("#x-copy").addEventListener("click", async () => {
+    try {
+      await navigator.clipboard.write([new ClipboardItem({ "image/png": xBlob })]);
+      $("#x-copy").textContent = "Copiada ✓";
+    } catch { $("#x-copy").textContent = "Não deu para copiar"; }
+    setTimeout(() => ($("#x-copy").textContent = "Copiar imagem"), 1800);
+  });
   $("#d-info").addEventListener("click", (e) => {
     const b = e.target.closest("[data-copy]");
     if (!b) return;

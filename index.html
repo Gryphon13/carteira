@@ -13,7 +13,7 @@
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%23f5a524'/><path d='M8 21l5-6 4 3 7-8' stroke='white' stroke-width='3' fill='none' stroke-linecap='round' stroke-linejoin='round'/></svg>" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="style.css?v=14" />
+  <link rel="stylesheet" href="style.css?v=15" />
 </head>
 <body>
   <!-- Login -->
@@ -77,18 +77,34 @@
       <section class="card">
         <div class="card-head">
           <h2>Evolução do patrimônio</h2>
-          <div class="seg small" id="range">
-            <button data-r="30">30d</button><button data-r="90">90d</button><button data-r="365" class="active">1a</button><button data-r="0">Tudo</button>
+          <div class="chart-tools">
+            <div class="seg small" id="range">
+              <button data-r="30">30d</button><button data-r="90">90d</button><button data-r="365">1a</button><button data-r="1095">3a</button><button data-r="0">Tudo</button>
+            </div>
+            <div class="pop-wrap">
+              <button class="btn ghost small icon" id="color-btn" type="button" title="Cor do gráfico"><i class="dot"></i></button>
+              <div id="color-pop" class="pop hidden">
+                <div class="muted small">Cor do gráfico</div>
+                <div class="swatches" id="swatches"></div>
+                <label class="color-custom">Outra cor <input type="color" id="color-input" /></label>
+                <label class="toggle"><input type="checkbox" id="color-all" /> usar também nos botões e destaques</label>
+                <button class="btn small ghost" type="button" id="color-reset">Voltar ao padrão</button>
+              </div>
+            </div>
           </div>
         </div>
         <div id="chart" class="chart"></div>
         <p class="muted small" id="chart-empty">O gráfico vai se formando com as fotos diárias (uma por dia, automática, e uma a cada atualização manual).</p>
+        <p class="muted small hidden" id="chart-note"></p>
       </section>
 
       <section class="card">
         <div class="card-head">
           <h2>Composição da carteira</h2>
-          <div class="seg small" id="pie-mode"><button data-m="ativo">Por ativo</button><button data-m="local">Por onde está</button></div>
+          <div class="chart-tools">
+            <div class="seg small" id="pie-mode"><button data-m="ativo">Por ativo</button><button data-m="local">Por onde está</button></div>
+            <button class="btn small" id="pie-export" type="button" title="Gera uma imagem só com as porcentagens, sem valores">Exportar imagem</button>
+          </div>
         </div>
         <div class="pie-wrap"><div id="pie"></div><div id="pie-legend" class="pie-legend"></div></div>
       </section>
@@ -230,6 +246,27 @@
     </main>
   </div>
 
+  <!-- Exportar composição -->
+  <div id="export-modal" class="modal hidden">
+    <div class="modal-card export-card">
+      <div class="modal-head">
+        <h2>Imagem da composição</h2>
+        <button class="btn ghost small" id="x-close" type="button">Fechar</button>
+      </div>
+      <p class="muted small">Só nomes e porcentagens — nenhum valor aparece na imagem.</p>
+      <div class="chart-tools">
+        <div class="seg small" id="x-mode"><button data-m="ativo">Por ativo</button><button data-m="local">Por onde está</button></div>
+        <div class="seg small" id="x-theme"><button data-t="dark">Escuro</button><button data-t="light">Claro</button></div>
+      </div>
+      <img id="x-img" class="x-img" alt="Composição da carteira em porcentagem" />
+      <div class="row-btns">
+        <a class="btn primary" id="x-download" download="composicao-carteira.png">Baixar imagem</a>
+        <button class="btn hidden" id="x-share" type="button">Compartilhar</button>
+        <button class="btn" id="x-copy" type="button">Copiar imagem</button>
+      </div>
+    </div>
+  </div>
+
   <!-- Detalhe do ativo -->
   <div id="modal" class="modal hidden">
     <div class="modal-card">
@@ -268,6 +305,6 @@
   </div>
 
   <script src="https://unpkg.com/lightweight-charts@4.2.3/dist/lightweight-charts.standalone.production.js"></script>
-  <script type="module" src="app.js?v=15"></script>
+  <script type="module" src="app.js?v=16"></script>
 </body>
 </html>
