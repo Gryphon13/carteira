@@ -198,3 +198,9 @@ code { font-family: var(--mono); font-size: 11px; background: var(--panel-2); pa
   #pie { max-width: 240px; margin: 0 auto; }
   .pl-row .vv { min-width: 0; }
 }
+
+/* Spam / suspeitos */
+.badge.warn { background: color-mix(in srgb, #eda100 18%, transparent); border-color: #c98500; color: #f0c25a; font-size: 10px; padding: 1px 6px; vertical-align: middle; }
+.note { margin: -4px 0 12px; font-size: 13px; padding: 8px 12px; border-radius: 10px; background: var(--panel-2); border: 1px solid var(--line); }
+.flagbox { display: grid; gap: 6px; padding: 10px 12px; border-radius: 12px; background: var(--panel-2); border: 1px solid var(--line); font-size: 13px; }
+.flagbox.warn { border-color: #c98500; }

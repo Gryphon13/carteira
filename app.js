@@ -24,6 +24,7 @@ const S = {
   range: 365,
   prefs: {},
   cb: {},
+  flags: {},
   pieMode: store("pie") || "ativo",
   hide: store("hide") === "1",
   filters: loadFilters(),
@@ -129,10 +130,21 @@ function change24(sym) {
   return l && l.o ? (l.p - l.o) / l.o : null;
 }
 const KIND_LOCAL = { b3: "B3", renda_fixa: "Renda fixa", outro: "Outros" };
+// spam/suspeito: sua marcação manual vale mais que a automática
+function holdingFlag(h) {
+  if (h.contract) {
+    const f = S.flags[`${h.network}:${h.contract.toLowerCase()}`];
+    if (f === "spam") return "spam";
+    if (f === "ok") return null;
+  }
+  return h.flag || null;
+}
 function cryptoRows(useFilters = false) {
   const f = S.filters;
   const map = new Map();
   for (const h of S.holdings) {
+    const flag = holdingFlag(h);
+    if (flag && !(useFilters && f.spam)) continue;
     if (useFilters && f.locals.length && !f.locals.includes(h.source)) continue;
     if (useFilters && f.net && h.network !== f.net) continue;
     const k = h.symbol;
@@ -143,6 +155,7 @@ function cryptoRows(useFilters = false) {
       r.hasPrice = true;
     }
     if (!r.name && h.name) r.name = h.name;
+    if (flag) r.flag = flag;
     r.parts.push(h);
     map.set(k, r);
   }
@@ -239,7 +252,7 @@ function totals() {
 
 // ------------------------------------------------------------------ dados
 async function loadAll() {
-  const [w, h, m, st, tx, sn, pf, cb] = await Promise.all([
+  const [w, h, m, st, tx, sn, pf, cb, fl] = await Promise.all([
     sb.from("wallets").select("*").order("created_at"),
     sb.from("holdings").select("*"),
     sb.from("manual_assets").select("*").order("created_at"),
@@ -248,6 +261,7 @@ async function loadAll() {
     sb.from("snapshots").select("taken_at,total_usd,total_brl,usd_brl").order("taken_at").limit(5000),
     sb.from("user_prefs").select("*").maybeSingle(),
     sb.from("cost_basis").select("*"),
+    sb.from("token_flags").select("*"),
   ]);
   for (const r of [w, h, m, st, tx, sn]) if (r.error) throw r.error;
   S.wallets = w.data;
@@ -258,6 +272,7 @@ async function loadAll() {
   S.snaps = sn.data;
   S.prefs = pf.data || {};
   S.cb = Object.fromEntries((cb.data || []).map((c) => [c.symbol, c]));
+  S.flags = Object.fromEntries((fl.data || []).map((x) => [`${x.network}:${x.contract.toLowerCase()}`, x.status]));
   const last = S.holdings.reduce((m, x) => (x.updated_at > m ? x.updated_at : m), "");
   $("#last-sync").textContent = last ? `Saldos atualizados ${ago(last)}` : "Ainda não sincronizado";
   connectLive();
@@ -387,7 +402,7 @@ function renderPainel() {
       const flash = live?.dir > 0 ? "flash-up" : live?.dir < 0 ? "flash-down" : "";
       if (live) live.dir = 0;
       return `<tr class="click ${r.hidden ? "dim" : ""}" data-sym="${esc(r.sym)}">
-        <td><div class="asset">${icon(r.sym)}<div><div class="sym">${esc(r.sym)}</div><div class="nets-small">${esc(nets)}</div></div></div></td>
+        <td><div class="asset">${icon(r.sym)}<div><div class="sym">${esc(r.sym)}${r.flag ? ` <span class="badge warn">${r.flag}</span>` : ""}</div><div class="nets-small">${esc(nets)}</div></div></div></td>
         <td><span class="price ${flash}">${dualUsd(r.price, price)}</span></td>
         <td><span class="pct ${cls(r.ch)}">${pct(r.ch)}</span></td>
         <td class="hide-sm">${qty(r.amount)}</td>
@@ -400,6 +415,12 @@ function renderPainel() {
   const emptyMsg = S.holdings.length
     ? "Nenhum ativo com esses filtros."
     : "Nenhum ativo ainda. Cadastre suas carteiras em <b>Cadastros</b> e clique em <b>Atualizar saldos</b>.";
+  const flagged = S.holdings.filter((h) => holdingFlag(h));
+  const nSus = flagged.filter((h) => holdingFlag(h) === "suspeito");
+  $("#spam-note").innerHTML = flagged.length
+    ? `🛡️ ${nSus.length ? `<b>${nSus.length} token(s) suspeito(s)</b> (${esc(nSus.map((h) => h.symbol).join(", "))}) e ` : ""}${flagged.length - nSus.length} token(s) de spam estão fora do total. ${S.filters.spam ? "" : '<a href="#" id="show-flagged">Mostrar para revisar</a>'}`
+    : "";
+  $("#spam-note").classList.toggle("hidden", !flagged.length);
   $("#crypto-table").innerHTML = head + (body || `<tr><td colspan="7" class="empty">${emptyMsg}</td></tr>`);
 
   // tabela manual
@@ -463,7 +484,7 @@ function pieData() {
     for (const a of manualRows()) addTo(a.symbol, a.valueBrl || 0);
   } else {
     for (const h of S.holdings) {
-      if (S.settings[h.symbol]?.hidden) continue;
+      if (S.settings[h.symbol]?.hidden || holdingFlag(h)) continue;
       const p = livePrice(h.symbol, h.price_usd != null ? Number(h.price_usd) : null);
       if (p != null) addTo(h.source, p * Number(h.amount) * r);
     }
@@ -665,10 +686,11 @@ function tvWidget(el, name, cfg) {
 function openAsset(sym, isB3 = false) {
   const tv = isB3 ? (S.manual.find((a) => a.symbol === sym)?.tv_symbol || `BMFBOVESPA:${sym.toUpperCase()}`) : tvSymbol(sym);
   $("#d-title").textContent = sym;
+  $("#d-flag").innerHTML = "";
   $("#d-tv-link").href = `https://br.tradingview.com/chart/?symbol=${encodeURIComponent(tv)}`;
   $("#d-form").classList.toggle("hidden", isB3);
   if (!isB3) {
-    const r = cryptoRows().find((x) => x.sym === sym);
+    const r = cryptoRows().find((x) => x.sym === sym) || cryptoRows(true).find((x) => x.sym === sym);
     const st = S.settings[sym] || {};
     $("#d-avg-usd").value = st.avg_cost_usd ?? "";
     $("#d-avg-brl").value = st.avg_cost_brl ?? "";
@@ -691,6 +713,14 @@ function openAsset(sym, isB3 = false) {
     $("#d-cb").innerHTML = cbx
       ? `<b>Preço médio pelo histórico da Binance:</b> ${price(avgUsd, "USD")} · ${price(avgBrl, "BRL")}<br><span class="muted small">${cbx.n_ops} operação(ões) de ${new Date(cbx.first_ts).toLocaleDateString("pt-BR")} a ${new Date(cbx.last_ts).toLocaleDateString("pt-BR")}; cobre ${qty(Number(cbx.qty))} unidade(s). Moedas que chegaram por depósito (vindas de outra carteira) não entram na conta. Se preencher os campos abaixo, o seu valor manual passa a valer.</span>`
       : '<span class="muted small">Sem histórico de compra deste ativo na Binance. Você pode informar o preço médio à mão.</span>';
+    const contracts = (cryptoRows(true).find((x) => x.sym === sym) || r)?.parts?.filter((p) => p.contract) || [];
+    const anyFlag = contracts.some((p) => holdingFlag(p));
+    $("#d-flag").innerHTML = contracts.length
+      ? `<div class="flagbox ${anyFlag ? "warn" : ""}">${anyFlag ? `<b>Token marcado como ${esc(holdingFlag(contracts[0]))}.</b> Ele não entra no total.` : "Token de contrato (não é a moeda nativa da rede)."}
+          <span class="muted small">Contrato: <span class="cp">${esc(contracts[0].contract)}</span> (${esc(NET[contracts[0].network] || contracts[0].network)})</span>
+          <div class="row-btns"><button type="button" class="btn small danger" data-flag="spam">Marcar como spam</button><button type="button" class="btn small" data-flag="ok">É legítimo, contar no total</button></div></div>`
+      : "";
+    $("#d-flag").dataset.sym = sym;
     $("#d-where").innerHTML = (r?.parts || [])
       .map((p) => `<div class="where"><span>${esc(p.source)} · <span class="muted">${esc(NET[p.network] || p.network)}</span></span><span>${qty(Number(p.amount))}</span></div>`)
       .join("") || '<p class="muted">—</p>';
@@ -1009,6 +1039,24 @@ function bind() {
     if (tr && tr.dataset.b3) openAsset(tr.dataset.b3, true);
   });
   $("#d-close").addEventListener("click", closeModal);
+  $("#spam-note").addEventListener("click", (e) => {
+    if (e.target.id !== "show-flagged") return;
+    e.preventDefault();
+    setF("spam", true);
+  });
+  $("#d-flag").addEventListener("click", async (e) => {
+    const b = e.target.closest("button[data-flag]");
+    if (!b) return;
+    const sym = $("#d-flag").dataset.sym;
+    const parts = S.holdings.filter((h) => h.symbol === sym && h.contract);
+    const rows = parts.map((p) => ({ user_id: S.user.id, network: p.network, contract: p.contract.toLowerCase(), status: b.dataset.flag }));
+    const { error } = await sb.from("token_flags").upsert(rows);
+    if (error) return alertMsg(error.message);
+    for (const r of rows) S.flags[`${r.network}:${r.contract}`] = r.status;
+    closeModal();
+    renderAll();
+    sb.functions.invoke("sync", { body: {}, region: REGION }).then(() => loadAll()).catch(() => {});
+  });
   $("#d-tabs").addEventListener("click", (e) => {
     const b = e.target.closest("button[data-t]");
     if (b) showDetailTab(b.dataset.t);

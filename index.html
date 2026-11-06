@@ -8,7 +8,7 @@
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%2310b981'/><path d='M8 21l5-6 4 3 7-8' stroke='white' stroke-width='3' fill='none' stroke-linecap='round' stroke-linejoin='round'/></svg>" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="style.css?v=6" />
+  <link rel="stylesheet" href="style.css?v=7" />
 </head>
 <body>
   <!-- Login -->
@@ -111,7 +111,7 @@
         <div class="local-row">
           <span class="muted small">Onde está:</span>
           <div id="f-locals" class="chips"></div>
-          <label class="toggle"><input type="checkbox" id="show-spam" /> mostrar tokens sem preço</label>
+          <label class="toggle"><input type="checkbox" id="show-spam" /> mostrar spam, suspeitos e sem preço</label>
         </div>
       </section>
 
@@ -120,6 +120,7 @@
           <h2>Cripto</h2>
           <span class="muted small">Clique no título de uma coluna para ordenar</span>
         </div>
+        <p id="spam-note" class="note hidden"></p>
         <div class="table-wrap"><table class="assets" id="crypto-table"></table></div>
       </section>
 
@@ -226,6 +227,7 @@
         <button class="btn ghost small" id="d-close">Fechar</button>
       </div>
       <div class="d-stats" id="d-stats"></div>
+      <div id="d-flag"></div>
       <div class="seg" id="d-tabs"><button data-t="chart" class="active">Gráfico</button><button data-t="movs">Movimentações</button></div>
       <div id="d-chart" class="tv-chart"></div>
       <div id="d-movs" class="hidden"></div>
@@ -253,6 +255,6 @@
   </div>
 
   <script src="https://unpkg.com/lightweight-charts@4.2.3/dist/lightweight-charts.standalone.production.js"></script>
-  <script type="module" src="app.js?v=6"></script>
+  <script type="module" src="app.js?v=7"></script>
 </body>
 </html>

@@ -32,6 +32,20 @@ async function runWallet(w: any): Promise<Result> {
   }
 }
 
+// Tokens falsos: nomes com site/convite ("visit", "claim", ".io"...) são spam; token de contrato
+// valendo US$ 500 ou mais fica "suspeito" até você confirmar que é legítimo.
+const SYMBOL_BAD = /[\s#$:/]|\.(io|com|org|net|app|xyz|site|finance|vip|club|top|live|gift|info|cc|me|fi|pro|ai)$/i;
+const NAME_BAD = /https?:|www\.|\.(io|com|org|net|app|xyz|site|finance|vip|club|top|live|gift|info|cc|me|fi|pro|fitness)\b|visit|claim|airdrop|reward|voucher/i;
+function tokenFlag(h: Holding, value: number | null, userFlag: Map<string, string>): string | null {
+  if (!h.contract) return null; // moeda nativa da rede (ETH, BNB, POL...)
+  const f = userFlag.get(`${h.network}:${h.contract.toLowerCase()}`);
+  if (f === "spam") return "spam";
+  if (f === "ok") return null;
+  if (SYMBOL_BAD.test(h.symbol || "") || NAME_BAD.test(h.name || "")) return "spam";
+  if (value != null && value >= 500) return "suspeito";
+  return null;
+}
+
 async function syncUser(userId: string, onlyWallet?: string) {
   let q = admin.from("wallets").select("*").eq("user_id", userId).eq("active", true);
   if (onlyWallet) q = q.eq("id", onlyWallet);
@@ -40,6 +54,8 @@ async function syncUser(userId: string, onlyWallet?: string) {
 
   const prices = await binancePrices();
   const report: any[] = [];
+  const { data: flags } = await admin.from("token_flags").select("network,contract,status").eq("user_id", userId);
+  const userFlag = new Map((flags ?? []).map((f) => [`${f.network}:${String(f.contract).toLowerCase()}`, f.status]));
 
   const results = await Promise.all(
     (wallets ?? []).map(async (w) => {
@@ -66,7 +82,9 @@ async function syncUser(userId: string, onlyWallet?: string) {
         if (priceFromBinance(base, prices) != null) symbol = base; // LDBTC (Earn antigo) -> BTC
       }
       if (price == null || !isFinite(price)) price = priceFromBinance(symbol, prices);
+      const value = price != null ? price * h.amount : null;
       return {
+        flag: tokenFlag(h, value, userFlag),
         user_id: userId,
         wallet_id: w.id,
         source: w.label,
@@ -76,7 +94,7 @@ async function syncUser(userId: string, onlyWallet?: string) {
         contract: h.contract ?? null,
         amount: h.amount,
         price_usd: price,
-        value_usd: price != null ? price * h.amount : null,
+        value_usd: value,
       };
     });
     if (r.meta) await admin.from("wallets").update({ meta: r.meta }).eq("id", w.id);
@@ -101,7 +119,7 @@ async function syncUser(userId: string, onlyWallet?: string) {
   if (inactive?.length) await admin.from("holdings").delete().in("wallet_id", inactive.map((w) => w.id));
 
   // Foto do patrimônio
-  const { data: all } = await admin.from("holdings").select("symbol, source, value_usd").eq("user_id", userId);
+  const { data: all } = await admin.from("holdings").select("symbol, source, value_usd").eq("user_id", userId).is("flag", null);
   const cryptoUsd = (all ?? []).reduce((s, h) => s + Number(h.value_usd || 0), 0);
   const bySymbol: Record<string, number> = {};
   for (const h of all ?? []) bySymbol[h.symbol] = (bySymbol[h.symbol] || 0) + Number(h.value_usd || 0);
