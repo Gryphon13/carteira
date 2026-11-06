@@ -13,7 +13,7 @@
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%23f5a524'/><path d='M8 21l5-6 4 3 7-8' stroke='white' stroke-width='3' fill='none' stroke-linecap='round' stroke-linejoin='round'/></svg>" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="style.css?v=15" />
+  <link rel="stylesheet" href="style.css?v=16" />
 </head>
 <body>
   <!-- Login -->
@@ -38,6 +38,7 @@
       <nav class="tabs">
         <button data-tab="painel" class="active">Painel</button>
         <button data-tab="movs">Movimentações</button>
+        <button data-tab="futuros">Futuros</button>
         <button data-tab="cadastros">Cadastros</button>
       </nav>
       <div class="top-right">
@@ -173,12 +174,34 @@
     </main>
 
     <!-- CADASTROS -->
+    <main id="tab-futuros" class="tab hidden">
+      <section class="hero">
+        <div>
+          <div class="muted">Resultado em futuros (Binance USD-M)</div>
+          <div class="total" id="fut-total">—</div>
+          <div class="sub"><span id="fut-sub" class="muted"></span></div>
+        </div>
+      </section>
+      <section class="grid3" id="fut-stats"></section>
+      <section class="card">
+        <div class="card-head"><h2>Resultado acumulado</h2><span class="muted small">lucros e prejuízos realizados, taxas, funding e liquidações</span></div>
+        <div id="fut-chart" class="chart"></div>
+      </section>
+      <section class="card">
+        <div class="card-head"><h2>Mês a mês</h2></div>
+        <div class="table-wrap"><table class="assets" id="fut-table"></table></div>
+        <p class="muted small" id="fut-note"></p>
+      </section>
+    </main>
+
     <main id="tab-cadastros" class="tab hidden">
       <section class="card">
         <div class="card-head"><h2>Carteiras e corretoras</h2></div>
         <div id="wallet-list" class="list"></div>
         <input type="file" id="csv-file" accept=".csv,.zip,.xlsx,text/csv,application/zip" multiple hidden />
+        <input type="file" id="cdc-file" accept=".csv,.zip,text/csv,application/zip" multiple hidden />
         <p class="hint">Operações antigas da Binance: a API da Binance não devolve mais trades de alguns anos atrás. Para recuperá-las, na Binance vá em <b>Carteira → Histórico de transações → Exportar / Gerar todos os extratos</b> (cada arquivo cobre até 12 meses), descompacte e use <b>Importar extrato (CSV)</b>. Aceita o arquivo .zip como vem da Binance, ou o .csv/.xlsx de dentro dele. Pode escolher vários de uma vez; importar de novo não duplica.</p>
+        <p class="hint">Crypto.com (app do celular): no app, exporte o histórico da <b>carteira de cripto</b> e da <b>conta em reais</b> (arquivos <code>crypto_transactions_record…</code> e <code>cash_transactions_record…</code>) e escolha todos de uma vez. Períodos repetidos entre arquivos são descartados. <button class="btn small" type="button" id="cdc-btn">Importar extrato da Crypto.com</button></p>
         <form id="wallet-form" class="form">
           <h3>Adicionar carteira</h3>
           <div class="row">
@@ -305,6 +328,6 @@
   </div>
 
   <script src="https://unpkg.com/lightweight-charts@4.2.3/dist/lightweight-charts.standalone.production.js"></script>
-  <script type="module" src="app.js?v=23"></script>
+  <script type="module" src="app.js?v=24"></script>
 </body>
 </html>

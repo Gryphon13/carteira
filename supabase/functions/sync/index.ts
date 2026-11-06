@@ -27,6 +27,12 @@ async function runWallet(w: any): Promise<Result> {
       return cardano(w.address);
     case "binance":
       return binance();
+    case "cryptocom":
+      // saldos calculados na importação do extrato (app da Crypto.com não tem API)
+      return {
+        holdings: Object.entries(w.meta?.saldos || {}).map(([symbol, amount]) => ({ network: "cryptocom", symbol, amount: Number(amount), name: null, contract: null, price_usd: null })),
+        txs: [],
+      };
     default:
       throw new Error(`tipo desconhecido: ${w.kind}`);
   }
@@ -44,6 +50,23 @@ function tokenFlag(h: Holding, value: number | null, userFlag: Map<string, strin
   if (SYMBOL_BAD.test(h.symbol || "") || NAME_BAD.test(h.name || "")) return "spam";
   if (value != null && value >= 500) return "suspeito";
   return null;
+}
+
+// preço pelo CoinGecko para moedas que a Binance não lista (ex.: CRO)
+const cgCache = new Map<string, number | null>();
+async function cgPrices(syms: string[]) {
+  const need = [...new Set(syms.map((x) => x.toLowerCase()))].filter((x) => /^[a-z0-9]{2,10}$/.test(x) && !cgCache.has(x));
+  for (let i = 0; i < need.length; i += 40) {
+    try {
+      const r = await fetch(`https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&include_tokens=top&per_page=250&symbols=${need.slice(i, i + 40).join(",")}`, { headers: { accept: "application/json" } });
+      if (!r.ok) break;
+      for (const x of await r.json()) {
+        const k = String(x.symbol || "").toLowerCase();
+        if (!cgCache.has(k) && x.current_price != null) cgCache.set(k, Number(x.current_price));
+      }
+    } catch { break; }
+  }
+  for (const x of need) if (!cgCache.has(x)) cgCache.set(x, null);
 }
 
 async function syncUser(userId: string, onlyWallet?: string) {
@@ -74,6 +97,9 @@ async function syncUser(userId: string, onlyWallet?: string) {
       report.push({ carteira: w.label, ok: false, erro: err, ms });
       continue;
     }
+    // Crypto.com: moedas que a Binance não lista (ex.: CRO) ganham preço pelo CoinGecko
+    const noPrice = w.kind === "cryptocom" ? (r.holdings as Holding[]).filter((h) => priceFromBinance(h.symbol, prices) == null) : [];
+    if (noPrice.length) await cgPrices(noPrice.map((h) => h.symbol));
     const rows = (r.holdings as Holding[]).map((h) => {
       let symbol = h.symbol;
       let price = h.price_usd ?? null;
@@ -82,6 +108,7 @@ async function syncUser(userId: string, onlyWallet?: string) {
         if (priceFromBinance(base, prices) != null) symbol = base; // LDBTC (Earn antigo) -> BTC
       }
       if (price == null || !isFinite(price)) price = priceFromBinance(symbol, prices);
+      if ((price == null || !isFinite(price)) && w.kind === "cryptocom") price = cgCache.get(symbol.toLowerCase()) ?? null;
       const value = price != null ? price * h.amount : null;
       return {
         flag: tokenFlag(h, value, userFlag),

@@ -45,11 +45,11 @@ const NET = {
   "eth-mainnet": "Ethereum", "bnb-mainnet": "BSC", "matic-mainnet": "Polygon", "arb-mainnet": "Arbitrum",
   "opt-mainnet": "Optimism", "base-mainnet": "Base", "avax-mainnet": "Avalanche", "linea-mainnet": "Linea",
   "zksync-mainnet": "zkSync", "scroll-mainnet": "Scroll",
-  "binance-spot": "Binance Spot", "binance-funding": "Binance Funding", "binance-earn": "Binance Earn", binance: "Binance",
+  "binance-spot": "Binance Spot", "binance-funding": "Binance Funding", "binance-earn": "Binance Earn", binance: "Binance", cryptocom: "Crypto.com",
 };
 const EVM_NETS = ["eth-mainnet", "bnb-mainnet", "matic-mainnet", "arb-mainnet", "base-mainnet", "opt-mainnet", "avax-mainnet", "linea-mainnet", "zksync-mainnet", "scroll-mainnet"];
 const EVM_DEFAULT = ["eth-mainnet", "bnb-mainnet", "matic-mainnet", "arb-mainnet", "base-mainnet", "opt-mainnet"];
-const KIND = { evm: "EVM", btc: "Bitcoin", cardano: "Cardano", polkadot: "Polkadot", binance: "Binance" };
+const KIND = { evm: "EVM", btc: "Bitcoin", cardano: "Cardano", polkadot: "Polkadot", binance: "Binance", cryptocom: "Crypto.com" };
 
 function store(k, v) {
   try {
@@ -325,7 +325,7 @@ async function allRows(make) {
   return { data: out, error: null };
 }
 async function loadAll() {
-  const [w, h, m, st, tx, sn, pf, cb, fl, op] = await Promise.all([
+  const [w, h, m, st, tx, sn, pf, cb, fl, op, fu] = await Promise.all([
     sb.from("wallets").select("*").order("created_at"),
     sb.from("holdings").select("*"),
     sb.from("manual_assets").select("*").order("created_at"),
@@ -336,6 +336,7 @@ async function loadAll() {
     sb.from("cost_basis").select("*"),
     sb.from("token_flags").select("*"),
     sb.from("manual_ops").select("*").order("op_date"),
+    allRows(() => sb.from("futures_income").select("ts,kind,asset,amount,trade_id").order("ts").order("id")),
   ]);
   for (const r of [w, h, m, st, tx, sn]) if (r.error) throw r.error;
   S.wallets = w.data;
@@ -347,6 +348,7 @@ async function loadAll() {
   S.prefs = pf.data || {};
   S.cb = Object.fromEntries((cb.data || []).map((c) => [c.symbol, c]));
   S.ops = op.data || [];
+  S.fut = fu.data || [];
   S.flags = Object.fromEntries((fl.data || []).map((x) => [`${x.network}:${x.contract.toLowerCase()}`, x.status]));
   const last = S.holdings.reduce((m, x) => (x.updated_at > m ? x.updated_at : m), "");
   $("#last-sync").textContent = last ? `Saldos atualizados ${ago(last)}` : "Ainda não sincronizado";
@@ -670,27 +672,59 @@ function unitFmt(v, asset) {
   if (asset === "BRL") return price(v, "BRL");
   return `${new Intl.NumberFormat("pt-BR", { maximumSignificantDigits: 6 }).format(v)} ${asset}`;
 }
+// preço em US$ de um ativo num dia (fechamento diário já baixado para o gráfico de evolução)
+function histUsd(asset, ms) {
+  if (!asset) return null;
+  if (STABLE.has(asset)) return 1;
+  const day = Math.floor(ms / DAY) * DAY;
+  if (asset === "BRL") { const r = closeAt(kLoad("USDTBRL"), day); return r ? 1 / r : null; }
+  const k = kLoad(asset + "USDT");
+  return k && !k.none ? closeAt(k, day) : null;
+}
+const brlAt = (ms) => { const k = kLoad("USDTBRL"); return (k && !k.none && closeAt(k, Math.floor(ms / DAY) * DAY)) || rate(); };
+const dualAt = (usd, ms, fmt = price) => usd == null || !isFinite(usd) ? "—" : `${fmt(usd, "USD")}<div class="sub2">${fmt(brlAt(ms) ? usd * brlAt(ms) : null, "BRL")}</div>`;
+const movsFetching = new Set();
 function renderAssetMovs(sym) {
   const list = assetMovs(sym);
   const dname = { in: "Entrada", out: "Saída", self: "Interna", trade: "Troca", buy: "Compra", sell: "Venda" };
   const sum = (d) => list.filter((x) => x.dir === d).reduce((s, x) => s + (x.amount || 0), 0);
   const cnt = (d) => list.filter((x) => x.dir === d).length;
+  // valor de cada movimentação em US$ na data (pelo preço da operação ou, sem ele, pelo fechamento do dia)
+  let missing = false;
+  for (const x of list) {
+    const ms = new Date(x.t.ts).getTime();
+    let u = null;
+    if (x.unit != null && x.unitAsset) { const q = histUsd(x.unitAsset, ms); if (q != null) u = x.unit * q; }
+    if (u == null) { u = histUsd(sym, ms); x.market = u != null; }
+    if (u == null && !STABLE.has(sym)) missing = true;
+    x.ms = ms;
+    x.usdUnit = u;
+    x.usdTotal = u != null ? u * x.amount : null;
+  }
+  if (missing && !movsFetching.has(sym) && list.length) {
+    movsFetching.add(sym);
+    const from = Math.floor(Math.min(...list.map((x) => x.ms)) / DAY) * DAY;
+    Promise.all([dailyCloses(sym + "USDT", from), dailyCloses("USDTBRL", from)]).then(() => { if (S.detail?.sym === sym) renderAssetMovs(sym); }).catch(() => {});
+  }
+  const tot = (d) => list.filter((x) => x.dir === d && x.usdTotal != null).reduce((a, x) => [a[0] + x.usdTotal, a[1] + x.usdTotal * (brlAt(x.ms) || 0)], [0, 0]);
+  const [buyU, buyB] = tot("buy"), [sellU, sellB] = tot("sell");
   $("#d-tabs").querySelector('[data-t="movs"]').textContent = `Movimentações (${list.length})`;
   $("#d-movs").innerHTML = `
     <div class="d-sum">
-      <div class="stat"><div class="muted small">Comprado (${cnt("buy")})</div><div class="v up">${qty(sum("buy"))}</div></div>
-      <div class="stat"><div class="muted small">Vendido / usado (${cnt("sell")})</div><div class="v down">${qty(sum("sell"))}</div></div>
+      <div class="stat"><div class="muted small">Comprado (${cnt("buy")})</div><div class="v up">${qty(sum("buy"))}</div><div class="sub2">${money(buyU, "USD")} · ${money(buyB, "BRL")}</div></div>
+      <div class="stat"><div class="muted small">Vendido / usado (${cnt("sell")})</div><div class="v down">${qty(sum("sell"))}</div><div class="sub2">${money(sellU, "USD")} · ${money(sellB, "BRL")}</div></div>
       <div class="stat"><div class="muted small">Entradas (${cnt("in")})</div><div class="v">${qty(sum("in"))}</div></div>
       <div class="stat"><div class="muted small">Saídas (${cnt("out")})</div><div class="v">${qty(sum("out"))}</div></div>
     </div>
+    <p class="muted small">Valores em US$ e R$ na data de cada movimentação. Nas entradas e saídas sem preço próprio, uso o fechamento do dia (marcado com ≈).</p>
     <div class="table-wrap"><table class="assets">
       <tr><th>Data</th><th>Tipo</th><th>Quantidade</th><th>Preço unitário</th><th class="hide-sm">Total</th><th class="hide-sm">Onde / detalhe</th><th></th></tr>
       ${list.map((x) => `<tr>
         <td>${x.t.ts ? new Date(x.t.ts).toLocaleString("pt-BR", { dateStyle: "short", timeStyle: "short" }) : "—"}</td>
         <td><span class="${x.dir === "buy" || x.dir === "in" ? "up" : x.dir === "sell" || x.dir === "out" ? "down" : ""}">${dname[x.dir] || x.dir}</span></td>
         <td>${qty(x.amount)}</td>
-        <td>${x.unitAsset ? unitFmt(x.unit, x.unitAsset) : "—"}</td>
-        <td class="hide-sm">${x.total != null && x.unitAsset ? (S.hide ? MASK : unitFmt(x.total, x.unitAsset)) : "—"}</td>
+        <td>${x.market ? '<span class="muted" title="fechamento do dia">≈ </span>' : ""}${dualAt(x.usdUnit, x.ms, price)}${x.unitAsset && !STABLE.has(x.unitAsset) && x.unitAsset !== "BRL" ? `<div class="nets-small">${unitFmt(x.unit, x.unitAsset)}</div>` : ""}</td>
+        <td class="hide-sm">${S.hide ? MASK : dualAt(x.usdTotal, x.ms, money)}</td>
         <td class="hide-sm det"><span class="nets-small cp" title="${esc(x.t.counterparty || "")}">${esc(x.t.source)} · ${esc(NET[x.t.network] || x.t.network)}${(x.swapped ? x.desc : x.t.counterparty) ? " · " + esc(shortAddr(x.swapped ? x.desc : x.t.counterparty)) : ""}</span></td>
         <td>${x.t.url ? `<a href="${esc(x.t.url)}" target="_blank" rel="noopener">ver ↗</a>` : ""}</td>
       </tr>`).join("") || '<tr><td colspan="7" class="empty">Nenhuma movimentação registrada para este ativo.</td></tr>'}
@@ -738,6 +772,7 @@ function setTheme(t) {
   document.querySelector('meta[name="theme-color"]')?.setAttribute("content", cssVar("--bg"));
   if (chart) { chart.applyOptions(chartOpts()); series.applyOptions(areaOpts(cssVar("--chart"))); }
   if (evoChart) evoChart.applyOptions(chartOpts());
+  if (futChart) renderFutures();
   if (!S.user) return;
   renderTape();
   renderWatchlist();
@@ -1273,6 +1308,90 @@ function openAsset(sym, isB3 = false) {
   $("#modal").classList.remove("hidden");
 }
 
+// ------------------------------------------------------------------ aba Futuros
+let futChart = null;
+async function renderFutures() {
+  const rows = (S.fut || []).map((r) => ({ ...r, ms: new Date(r.ts).getTime(), v: Number(r.amount) }));
+  if (!rows.length) {
+    $("#fut-total").textContent = "—";
+    $("#fut-sub").textContent = "Importe o extrato da Binance (Cadastros → Binance → Importar extrato) para ver o desempenho em futuros.";
+    $("#fut-stats").innerHTML = "";
+    $("#fut-table").innerHTML = "";
+    return;
+  }
+  // cotação do dólar em reais em cada dia (USDT/BRL da Binance)
+  const first = Math.floor(rows[0].ms / DAY) * DAY;
+  const fxK = await dailyCloses("USDTBRL", first).catch(() => null);
+  const fxAt = (ms) => (fxK && closeAt(fxK, Math.floor(ms / DAY) * DAY)) || rate() || 5;
+  const res = rows.filter((r) => r.kind !== "transfer");
+  const sum = (k) => rows.filter((r) => r.kind === k).reduce((a, r) => a + r.v, 0);
+  const sumBrl = (list) => list.reduce((a, r) => a + r.v * fxAt(r.ms), 0);
+  const pnl = sum("pnl"), fees = sum("fee"), funding = sum("funding"), ins = sum("insurance"), other = sum("other");
+  const total = pnl + fees + funding + ins + other;
+  const totalBrlThen = sumBrl(res);
+  const putIn = rows.filter((r) => r.kind === "transfer" && r.v > 0).reduce((a, r) => a + r.v, 0);
+  const takenOut = -rows.filter((r) => r.kind === "transfer" && r.v < 0).reduce((a, r) => a + r.v, 0);
+  const pnlRows = rows.filter((r) => r.kind === "pnl");
+  const wins = pnlRows.filter((r) => r.v > 0), losses = pnlRows.filter((r) => r.v < 0);
+  const trades = new Set(rows.filter((r) => r.kind === "fee" && r.trade_id).map((r) => r.trade_id)).size;
+  const liq = new Set(rows.filter((r) => r.kind === "insurance").map((r) => Math.floor(r.ms / 60000))).size;
+  const best = pnlRows.reduce((m, r) => (r.v > (m?.v ?? -Infinity) ? r : m), null);
+  const worst = pnlRows.reduce((m, r) => (r.v < (m?.v ?? Infinity) ? r : m), null);
+  const fmtD = (ms) => new Date(ms).toLocaleDateString("pt-BR");
+  const nowRate = rate();
+  const both = (usd, brlThen) => `${money(usd, "USD")}<div class="sub2">${brlThen != null ? `${money(brlThen, "BRL")} na época · ` : ""}${money(nowRate ? usd * nowRate : null, "BRL")} hoje</div>`;
+
+  $("#fut-total").innerHTML = `<span class="${cls(total)}">${money(total, "USD")}</span>`;
+  $("#fut-sub").innerHTML = `${money(totalBrlThen, "BRL")} no câmbio de cada dia · ${money(nowRate ? total * nowRate : null, "BRL")} no câmbio de hoje · de ${fmtD(rows[0].ms)} a ${fmtD(rows[rows.length - 1].ms)}`;
+  const stat = (k, v, extra = "") => `<div class="stat"><div class="muted small">${k}</div><div class="v">${v}</div>${extra}</div>`;
+  $("#fut-stats").innerHTML = [
+    stat("Colocado na conta de futuros", money(putIn, "USD"), `<div class="sub2">retirado de volta: ${money(takenOut, "USD")}</div>`),
+    stat("Lucro/prejuízo das posições", `<span class="${cls(pnl)}">${money(pnl, "USD")}</span>`, `<div class="sub2">${wins.length} fechamentos no lucro (${money(wins.reduce((a, r) => a + r.v, 0), "USD")}) · ${losses.length} no prejuízo (${money(losses.reduce((a, r) => a + r.v, 0), "USD")})</div>`),
+    stat("Taxas de negociação", `<span class="down">${money(fees, "USD")}</span>`, `<div class="sub2">${trades} execuções de ordem</div>`),
+    stat("Funding (taxa de financiamento)", `<span class="${cls(funding)}">${money(funding, "USD")}</span>`),
+    stat("Liquidações", `<span class="down">${money(ins, "USD")}</span>`, `<div class="sub2">taxa do fundo de seguro em ${liq} liquidação(ões)</div>`),
+    stat("Acerto", pnlRows.length ? `${Math.round((wins.length / pnlRows.length) * 100)}%` : "—", `<div class="sub2">melhor: ${best ? money(best.v, "USD") + " em " + fmtD(best.ms) : "—"}<br>pior: ${worst ? money(worst.v, "USD") + " em " + fmtD(worst.ms) : "—"}</div>`),
+  ].join("");
+
+  // mês a mês
+  const months = new Map();
+  for (const r of rows) {
+    const k = new Date(r.ms).toISOString().slice(0, 7);
+    const m = months.get(k) || months.set(k, { pnl: 0, fee: 0, funding: 0, insurance: 0, other: 0, transfer: 0, brl: 0 }).get(k);
+    m[r.kind] = (m[r.kind] || 0) + r.v;
+    if (r.kind !== "transfer") m.brl += r.v * fxAt(r.ms);
+  }
+  let acc = 0;
+  const lines = [...months].sort(([a], [b]) => a.localeCompare(b)).map(([k, m]) => {
+    const resM = m.pnl + m.fee + m.funding + m.insurance + m.other;
+    acc += resM;
+    return `<tr><td>${k.split("-").reverse().join("/")}</td><td>${m.transfer ? money(m.transfer, "USD") : "—"}</td><td><span class="${cls(m.pnl)}">${money(m.pnl, "USD")}</span></td>
+      <td class="hide-sm">${money(m.fee + m.funding, "USD")}</td><td class="hide-sm">${m.insurance ? `<span class="down">${money(m.insurance, "USD")}</span>` : "—"}</td>
+      <td><b class="${cls(resM)}">${money(resM, "USD")}</b><div class="sub2">${money(m.brl, "BRL")}</div></td><td class="hide-sm"><span class="${cls(acc)}">${money(acc, "USD")}</span></td></tr>`;
+  });
+  $("#fut-table").innerHTML = `<tr><th>Mês</th><th>Depósitos (+) / retiradas (−)</th><th>Lucro/prejuízo</th><th class="hide-sm">Taxas + funding</th><th class="hide-sm">Liquidações</th><th>Resultado</th><th class="hide-sm">Acumulado</th></tr>` + lines.reverse().join("");
+  $("#fut-note").textContent = "Valores em dólar (USDT/BUSD). O valor em reais usa o USDT/BRL do dia de cada lançamento. Fonte: extrato de transações da Binance (conta USD-M Futures).";
+
+  // gráfico do acumulado
+  if (!window.LightweightCharts) return;
+  if (!futChart) {
+    futChart = LightweightCharts.createChart($("#fut-chart"), {
+      ...chartOpts(), autoSize: true,
+      rightPriceScale: { borderVisible: false }, timeScale: { borderVisible: false, minBarSpacing: 0.05 },
+      localization: { locale: "pt-BR", priceFormatter: (v) => money(v, "USD") },
+    });
+    futChart.series = futChart.addBaselineSeries({ baseValue: { type: "price", price: 0 }, lineWidth: 2 });
+  }
+  futChart.applyOptions(chartOpts());
+  const g = cssVar("--green"), rd = cssVar("--red");
+  futChart.series.applyOptions({ topLineColor: g, topFillColor1: rgba(g, 0.25), topFillColor2: rgba(g, 0.02), bottomLineColor: rd, bottomFillColor1: rgba(rd, 0.02), bottomFillColor2: rgba(rd, 0.25) });
+  const byDay = new Map();
+  let run = 0;
+  for (const r of res) { run += r.v; byDay.set(Math.floor(r.ms / DAY) * DAY / 1000, run); }
+  futChart.series.setData([...byDay].map(([time, value]) => ({ time, value })));
+  futChart.timeScale().fitContent();
+}
+
 // ------------------------------------------------------------------ aba Informações
 const cgDetail = new Map();
 const big = (v, ccy) => {
@@ -1494,6 +1613,7 @@ function renderCadastros() {
         <div class="grow"><b>${esc(w.label)}</b> <span class="muted small">${money(toCcy(v))}${last ? " · " + ago(last) : ""}</span>
           <div class="addr">${esc(w.address || "chave guardada no Supabase")}${w.kind === "evm" ? " · " + (w.networks || []).map((x) => NET[x] || x).join(", ") : ""}</div></div>
         <button class="btn small" data-act="sync" data-id="${w.id}">Atualizar</button>
+        ${w.kind === "cryptocom" ? `<button class="btn small" data-act="cdc" data-id="${w.id}">Importar extrato (CSV)</button>` : ""}
         ${w.kind === "binance" ? `<button class="btn small" data-act="hist" data-id="${w.id}">Importar histórico</button><button class="btn small" data-act="csv" data-id="${w.id}" title="Para operações antigas que a API da Binance não devolve">Importar extrato (CSV)</button>` : ""}
         <button class="btn small ghost" data-act="toggle" data-id="${w.id}">${w.active ? "Desativar" : "Ativar"}</button>
         <button class="btn small ghost danger" data-act="del" data-id="${w.id}">Excluir</button>
@@ -1672,13 +1792,14 @@ async function readTables(file) {
   }
   return [parseCSV(new TextDecoder().decode(buf))];
 }
-const norm = (x) => String(x ?? "").trim().toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9]+/g, "_");
+const norm = (x) => String(x ?? "").trim().toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
 const HEAD = {
   t: ["utc_time", "time", "date", "date_utc", "horario_utc", "hora_utc", "data_utc", "data", "horario", "tempo_utc", "tempo", "hora", "data_hora"],
   a: ["account", "conta"],
   o: ["operation", "operacao", "tipo", "type"],
   c: ["coin", "moeda", "asset", "ativo", "criptomoeda"],
   v: ["change", "alteracao", "alterar", "mudanca", "variacao", "quantidade", "amount", "valor"],
+  r: ["remark", "observacao", "obs", "comentario"],
 };
 const FIATS = new Set(["BRL", "USD", "EUR"]);
 const isCash = (c) => STABLE.has(c) || FIATS.has(c);
@@ -1697,11 +1818,18 @@ function classifyStatement(all, api) {
   const lastTs = new Map(); // data do último lançamento de cada mês agrupado
   const aggM = (m, coin, ts, v, kind) => { const k = `${coin}|${month(ts)}`; agg(m, k, v); lastTs.set(kind + k, Math.max(lastTs.get(kind + k) || 0, ts)); };
   const groups = new Map(), income = new Map(), fut = new Map(), fees = new Map();
-  const txs = [], trades = [];
+  const txs = [], trades = [], futures = [];
+  const futIds = new Map();
   let moves = 0, other = 0, dupes = 0;
   for (const r of all) {
     if (FUT.test(r.acc)) {
       if (!/transfer/i.test(r.op)) aggM(fut, r.coin, r.ts, r.v, "fut");
+      const kind = /realized|realizado/i.test(r.op) ? "pnl" : /funding/i.test(r.op) ? "funding" : /insurance|seguro/i.test(r.op) ? "insurance"
+        : /transfer/i.test(r.op) ? "transfer" : /fee|taxa/i.test(r.op) ? "fee" : "other";
+      const base = `${r.ts}:${kind}:${r.coin}:${Number(r.v)}`;
+      const n = (futIds.get(base) || 0) + 1;
+      futIds.set(base, n);
+      futures.push({ id: n > 1 ? `${base}:${n}` : base, ts: new Date(r.ts).toISOString(), kind, op: r.op, asset: r.coin, amount: r.v, trade_id: (r.rem.match(/(\d{4,})/) || [])[1] || null });
       continue;
     }
     if (MOVE_IN.test(r.op) || MOVE_OUT.test(r.op)) {
@@ -1754,7 +1882,7 @@ function classifyStatement(all, api) {
   monthly(fut, "fut", "resultado de futuros (lucro/prejuízo, taxas e funding)");
   monthly(fees, "taxa", "taxas de negociação");
   const months = (m) => new Set([...m.keys()].map((k) => k.split("|")[1])).size;
-  return { trades, txs, stats: { trades: trades.length, moves, other, dupes, incomeMonths: months(income), futMonths: months(fut) } };
+  return { trades, txs, futures, stats: { trades: trades.length, moves, other, dupes, incomeMonths: months(income), futMonths: months(fut) } };
 }
 // fuso do arquivo: "…(UTC-3)…" no nome ou coluna UTC_Time
 function fileOffsetMs(name, timeHeader) {
@@ -1763,6 +1891,136 @@ function fileOffsetMs(name, timeHeader) {
   if (!m) return 0;
   const sign = m[1].slice(-1) === "-" ? -1 : 1;
   return sign * (Number(m[2]) * 3600e3 + Number(m[3] || 0) * 60e3);
+}
+
+// ------------------------------------------------------------------ extrato da Crypto.com (app do celular)
+// Arquivos "crypto_transactions_record_*.csv" (carteira de cripto) e "cash_transactions_record_*.csv" (conta em reais).
+// Arquivos com períodos sobrepostos não duplicam: cada linha idêntica conta no máximo o número de vezes que aparece num único arquivo.
+function mergeNoDup(tables) {
+  const best = new Map();
+  for (const rows of tables) {
+    const c = new Map();
+    for (const r of rows) { const k = JSON.stringify(r); c.set(k, (c.get(k) || 0) + 1); }
+    for (const [k, n] of c) best.set(k, Math.max(best.get(k) || 0, n));
+  }
+  const out = [];
+  for (const [k, n] of best) for (let i = 0; i < n; i++) out.push(JSON.parse(k));
+  return out;
+}
+function classifyCryptoCom(cryptoRows, cashRows) {
+  const LOCK = /lockup|supercharger_deposit|supercharger_withdrawal|dpos_lock/;
+  const INCOME = /reward|cashback|reimbursement|admin_wallet_credited|referral|bonus|interest|airdrop|gift/;
+  const num = (x) => Number(String(x ?? "").trim()) || 0;
+  const ms = (x) => Date.parse(String(x).trim().replace(" ", "T") + "Z");
+  const month = (t) => new Date(t).toISOString().slice(0, 7);
+  const txs = [], bal = new Map(), income = new Map(), lastTs = new Map();
+  const addBal = (c, v) => c && c !== "BRL" && bal.set(c, (bal.get(c) || 0) + v);
+  const tx = (o) => txs.push({ ...o, ts: new Date(o.t).toISOString(), t: undefined });
+  const swapPend = new Map();
+  let n = 0;
+  for (const r of cryptoRows) {
+    const t = ms(r.ts), kind = r.kind, cur = r.cur, amt = num(r.amt), to = r.tocur, toAmt = num(r.toamt);
+    if (!t || !kind) continue;
+    if (LOCK.test(kind)) continue; // CRO travado continua sendo seu
+    const id = `csv-cdc-${t}-${kind}-${cur}-${amt}-${n++}`;
+    if (kind === "crypto_exchange") {
+      tx({ tx_hash: id, t, direction: "buy", symbol: to, amount: toAmt, quote_asset: cur, quote_amount: Math.abs(amt), counterparty: `Crypto.com: ${r.desc}` });
+      addBal(cur, amt); addBal(to, toAmt);
+    } else if (kind === "viban_purchase" || kind === "recurring_buy_order") {
+      tx({ tx_hash: id, t, direction: "buy", symbol: to, amount: toAmt, quote_asset: cur, quote_amount: Math.abs(amt), counterparty: `Crypto.com: ${r.desc}${kind === "recurring_buy_order" ? " (compra recorrente)" : ""}` });
+      addBal(to, toAmt);
+    } else if (kind === "crypto_viban_exchange") {
+      tx({ tx_hash: id, t, direction: "sell", symbol: cur, amount: Math.abs(amt), quote_asset: to, quote_amount: toAmt, counterparty: `Crypto.com: ${r.desc}` });
+      addBal(cur, amt);
+    } else if (kind === "crypto_wallet_swap_debited" || kind === "crypto_wallet_swap_credited") {
+      // conversão de saldo (ex.: LUNA → LUNC, CUDOS → FET): junta as duas pontas pelo horário
+      const p = swapPend.get(t);
+      if (p && p.kind !== kind) {
+        swapPend.delete(t);
+        const deb = kind.endsWith("debited") ? r : p.r, cred = kind.endsWith("credited") ? r : p.r;
+        tx({ tx_hash: id, t, direction: "buy", symbol: cred.cur, amount: num(cred.amt), quote_asset: deb.cur, quote_amount: Math.abs(num(deb.amt)), counterparty: `Crypto.com: conversão ${deb.cur} → ${cred.cur}` });
+      } else swapPend.set(t, { kind, r });
+      addBal(cur, amt);
+    } else if (INCOME.test(kind) && amt > 0) {
+      const k = `${cur}|${month(t)}`;
+      income.set(k, (income.get(k) || 0) + amt);
+      lastTs.set(k, Math.max(lastTs.get(k) || 0, t));
+      addBal(cur, amt);
+    } else if (amt) {
+      // depósito, saque, recarga do cartão, poeira convertida…
+      const dir = amt > 0 ? "in" : "out";
+      tx({ tx_hash: id, t, direction: dir, symbol: cur, amount: Math.abs(amt), counterparty: `Crypto.com: ${r.desc}`, url: null });
+      addBal(cur, amt);
+    }
+  }
+  for (const [, p] of swapPend) { // ponta sem par
+    const r = p.r, amt = num(r.amt), t = ms(r.ts);
+    tx({ tx_hash: `csv-cdc-${t}-${r.kind}-${r.cur}-${amt}-x`, t, direction: amt > 0 ? "in" : "out", symbol: r.cur, amount: Math.abs(amt), counterparty: `Crypto.com: ${r.desc}` });
+  }
+  for (const [k, v] of income) {
+    const [cur, ym] = k.split("|");
+    tx({ tx_hash: `csv-cdc-rend-${cur}-${ym}`, t: lastTs.get(k), direction: "in", symbol: cur, amount: v, counterparty: `Crypto.com: recompensas e cashback de ${ym.split("-").reverse().join("/")}` });
+  }
+  // conta em reais: só depósitos, saques e recargas do cartão (compras e vendas já vieram pela carteira de cripto)
+  let brl = 0;
+  for (const r of cashRows) {
+    const t = ms(r.ts), kind = r.kind, amt = num(r.amt);
+    if (!t) continue;
+    const id = `csv-cdc-brl-${t}-${kind}-${amt}`;
+    if (kind === "viban_deposit" || kind === "viban_admin_credit") { tx({ tx_hash: id, t, direction: "in", symbol: "BRL", amount: Math.abs(amt), counterparty: `Crypto.com: ${r.desc}` }); brl += Math.abs(amt); }
+    else if (kind === "viban_withdrawal") { tx({ tx_hash: id, t, direction: "out", symbol: "BRL", amount: Math.abs(amt), counterparty: `Crypto.com: ${r.desc}` }); brl -= Math.abs(amt); }
+    else if (kind === "viban_card_top_up") { tx({ tx_hash: id, t, direction: "out", symbol: "BRL", amount: Math.abs(amt), counterparty: "Crypto.com: recarga do cartão" }); brl -= Math.abs(amt); }
+    else if (kind === "viban_purchase" || kind === "recurring_buy_order") brl -= Math.abs(amt);
+    else if (kind === "crypto_viban") brl += num(r.toamt);
+  }
+  if (Math.abs(brl) > 0.005) bal.set("BRL", brl);
+  const saldos = Object.fromEntries([...bal].filter(([, v]) => Math.abs(v) > 1e-9).map(([k, v]) => [k, Number(v.toPrecision(12))]));
+  return { txs, saldos, stats: { rows: cryptoRows.length + cashRows.length, txs: txs.length, incomeMonths: income.size } };
+}
+async function importCryptoCom(files) {
+  const rep = reportBox();
+  rep.classList.remove("hidden");
+  rep.innerHTML = '<span class="muted">Lendo os extratos da Crypto.com…</span>';
+  const crypto = [], cash = [];
+  let raw = 0;
+  for (const f of files) {
+    const tables = await readTables(f);
+    for (const rows of tables) {
+      const hi = rows.findIndex((r) => r.some((c) => norm(c) === "transaction_kind"));
+      if (hi < 0) continue;
+      const head = rows[hi].map(norm);
+      const g = (r, n) => r[head.indexOf(n)] ?? "";
+      const list = rows.slice(hi + 1).filter((r) => r.some((c) => String(c).trim())).map((r) => ({
+        ts: g(r, "timestamp_utc"), desc: g(r, "transaction_description"), cur: String(g(r, "currency")).toUpperCase(), amt: g(r, "amount"),
+        tocur: String(g(r, "to_currency")).toUpperCase(), toamt: g(r, "to_amount"), kind: g(r, "transaction_kind"), hash: g(r, "transaction_hash"),
+      }));
+      raw += list.length;
+      const isCash = /cash|fiat/i.test(f.name) || (list.length && list.every((x) => x.cur === "BRL" || /^viban|crypto_viban$/.test(x.kind)));
+      (isCash ? cash : crypto).push(list);
+    }
+  }
+  const cr = mergeNoDup(crypto), ca = mergeNoDup(cash);
+  if (!cr.length && !ca.length) { rep.innerHTML = '<div class="err">Não reconheci os arquivos. Use os extratos "crypto_transactions_record" e "cash_transactions_record" exportados pelo app da Crypto.com.</div>'; return; }
+  const res = classifyCryptoCom(cr, ca);
+  // carteira "Crypto.com" (criada na primeira importação)
+  let w = S.wallets.find((x) => x.kind === "cryptocom");
+  if (!w) {
+    const { data, error } = await sb.from("wallets").insert({ user_id: S.user.id, kind: "cryptocom", label: "Crypto.com", address: "extrato", networks: [], active: true }).select().single();
+    if (error) { rep.innerHTML = `<div class="err">Erro ao criar a carteira: ${esc(error.message)}</div>`; return; }
+    w = data;
+  }
+  await sb.from("wallets").update({ meta: { ...(w.meta || {}), saldos: res.saldos, importado_em: new Date().toISOString() } }).eq("id", w.id);
+  const txs = res.txs.map((t) => ({ ...t, user_id: S.user.id, wallet_id: w.id, source: w.label, network: "cryptocom" }));
+  await sb.from("transactions").delete().eq("wallet_id", w.id).like("tx_hash", "csv-cdc-%");
+  for (let i = 0; i < txs.length; i += 500) {
+    const { error } = await sb.from("transactions").upsert(txs.slice(i, i + 500), { onConflict: "user_id,network,tx_hash,symbol,direction" });
+    if (error) { rep.innerHTML = `<div class="err">Erro ao gravar: ${esc(error.message)}</div>`; return; }
+  }
+  const dup = raw - cr.length - ca.length;
+  rep.innerHTML = `<div>✓ <b>Crypto.com importada</b>: ${raw} linhas${dup ? ` (${dup} repetidas entre arquivos foram descartadas)` : ""}, ${res.txs.length} movimentações. Saldo calculado: ${Object.entries(res.saldos).map(([k, v]) => `${qty(v)} ${k}`).join(", ") || "zerado"}.</div><div class="muted">Atualizando saldos…</div>`;
+  await sb.functions.invoke("sync", { body: { wallet_id: w.id }, region: REGION }).catch(() => {});
+  await loadAll();
+  rep.innerHTML = rep.innerHTML.replace(/<div class="muted">Atualizando saldos…<\/div>/, "");
 }
 
 async function importBinanceCSV(files) {
@@ -1784,7 +2042,7 @@ async function importBinanceCSV(files) {
       if (hi < 0) { seenHeads.push(`${f.name}: ${(rows[0] || []).slice(0, 8).join(" | ")}`); continue; }
       const head = rows[hi].map(norm);
       const ix = (k) => head.findIndex((h) => HEAD[k].includes(h));
-      const iT = ix("t"), iA = ix("a"), iO = ix("o"), iC = ix("c"), iV = ix("v");
+      const iT = ix("t"), iA = ix("a"), iO = ix("o"), iC = ix("c"), iV = ix("v"), iR = ix("r");
       if (iT < 0 || iV < 0) { seenHeads.push(`${f.name}: ${rows[hi].join(" | ")}`); continue; }
       const off = fileOffsetMs(f.name, head[iT]); // horário local do arquivo → UTC
       for (const r of rows.slice(hi + 1)) {
@@ -1794,7 +2052,7 @@ async function importBinanceCSV(files) {
         const vv = r[iV];
         const v = typeof vv === "number" ? vv : Number(String(vv || "").replace(/\s/g, "").replace(/,(?=\d{1,8}$)/, ".").replace(/[^\d.eE+-]/g, ""));
         if (!ts || !isFinite(v) || !v) continue;
-        all.push({ ts, acc: String(r[iA] ?? "").trim(), op: String(r[iO] ?? "").trim(), coin: String(r[iC] ?? "").trim().toUpperCase(), v });
+        all.push({ ts, acc: String(r[iA] ?? "").trim(), op: String(r[iO] ?? "").trim(), coin: String(r[iC] ?? "").trim().toUpperCase(), v, rem: iR >= 0 ? String(r[iR] ?? "").trim() : "" });
       }
     }
   }
@@ -1816,6 +2074,11 @@ async function importBinanceCSV(files) {
   for (let i = 0; i < txs.length; i += 500) {
     const { error } = await sb.from("transactions").upsert(txs.slice(i, i + 500), { onConflict: "user_id,network,tx_hash,symbol,direction" });
     if (error) { rep.innerHTML = `<div class="err">Erro ao gravar: ${esc(error.message)}</div>`; return; }
+  }
+  const fut = res.futures.map((f) => ({ ...f, user_id: S.user.id }));
+  for (let i = 0; i < fut.length; i += 500) {
+    const { error } = await sb.from("futures_income").upsert(fut.slice(i, i + 500), { onConflict: "user_id,id", ignoreDuplicates: true });
+    if (error) { rep.innerHTML = `<div class="err">Erro ao gravar futuros: ${esc(error.message)}</div>`; return; }
   }
   const st = res.stats;
   const first = new Date(Math.min(...all.map((r) => r.ts))).toLocaleDateString("pt-BR");
@@ -2017,6 +2280,7 @@ function bind() {
       document.querySelectorAll(".tabs button").forEach((x) => x.classList.toggle("active", x === b));
       document.querySelectorAll(".tab").forEach((t) => t.classList.toggle("hidden", t.id !== "tab-" + b.dataset.tab));
       if (b.dataset.tab === "painel") renderChart();
+      if (b.dataset.tab === "futuros") renderFutures();
     }));
   document.querySelectorAll("#ccy button").forEach((b) => {
     b.classList.toggle("active", b.dataset.ccy === S.ccy);
@@ -2240,6 +2504,7 @@ function bind() {
     if (b.dataset.act === "sync") return runSync(w.id);
     if (b.dataset.act === "hist") return runHist(b);
     if (b.dataset.act === "csv") return $("#csv-file").click();
+    if (b.dataset.act === "cdc") return $("#cdc-file").click();
     if (b.dataset.act === "toggle") {
       await sb.from("wallets").update({ active: !w.active }).eq("id", w.id);
       w.active = !w.active;
@@ -2254,6 +2519,12 @@ function bind() {
   });
 
   $("#m-kind").addEventListener("change", manualFormLabels);
+  $("#cdc-file").addEventListener("change", async (e) => {
+    const files = [...e.target.files];
+    e.target.value = "";
+    if (files.length) await importCryptoCom(files).catch((err) => alertMsg(`Erro no extrato da Crypto.com: ${err.message}`));
+  });
+  $("#cdc-btn").addEventListener("click", () => $("#cdc-file").click());
   $("#csv-file").addEventListener("change", async (e) => {
     const files = [...e.target.files];
     e.target.value = "";
