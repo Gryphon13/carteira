@@ -418,6 +418,8 @@ setInterval(() => {
 }, 1000);
 setInterval(() => S.user && loadQuotes(), 30_000);
 
+if (new URLSearchParams(location.search).has("debug")) window.__S = S; // para diagnóstico no console
+
 // ------------------------------------------------------------------ render
 function renderAll() {
   renderPainel();

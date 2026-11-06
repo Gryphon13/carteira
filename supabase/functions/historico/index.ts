@@ -205,9 +205,56 @@ async function run(userId: string) {
     }
     p.n++; p.last = ts;
   };
+  // troca de nome do token (redenominação / migração): o custo passa do antigo para o novo
+  const rename = (from: string, fromQty: number, to: string, toQty: number, ts: string) => {
+    const p = P(from);
+    const f = p.qty > 0 ? Math.min(fromQty, p.qty) / p.qty : 0;
+    const usd = p.usd * f, brl = p.brl * f;
+    p.usd -= usd; p.brl -= brl; p.qty -= Math.min(fromQty, p.qty); p.n++; p.last = ts;
+    if (STABLE.has(to) || !(toQty > 0)) return;
+    const q = P(to);
+    q.qty += toQty; q.usd += usd; q.brl += brl; q.n++; q.first ??= ts; q.last = ts;
+  };
+  const RENAMES = new Set(["LUNA>LUNC", "RNDR>RENDER", "MATIC>POL", "AGIX>FET", "OCEAN>FET", "FXS>FRAX", "FTM>S", "MKR>SKY", "EOS>A"]);
+  // depósitos, saques, rendimentos, taxas e ajustes vindos do extrato (CSV)
+  const moves: any[] = [];
+  for (let from = 0; ; from += 1000) {
+    const { data } = await admin.from("transactions").select("ts,direction,symbol,amount,tx_hash,counterparty")
+      .eq("user_id", userId).eq("network", "binance").like("tx_hash", "csv-%").order("ts").range(from, from + 999);
+    moves.push(...(data ?? []));
+    if (!data || data.length < 1000) break;
+  }
+  // "Asset Recovery" (sai o token antigo) + "Token Swap - Distribution" (entra o novo) em até 4 dias = troca de nome
+  const used = new Set<any>();
+  const renameEv: any[] = [];
+  for (const i of moves.filter((m) => m.direction === "in" && /Token Swap - Distribution/i.test(m.counterparty || ""))) {
+    const ti = new Date(i.ts).getTime();
+    const o = moves.find((m) => !used.has(m) && m.direction === "out" && /Asset Recovery/i.test(m.counterparty || "") && ti - new Date(m.ts).getTime() >= 0 && ti - new Date(m.ts).getTime() < 4 * DAY);
+    if (!o) continue;
+    used.add(o); used.add(i);
+    renameEv.push({ ts: i.ts, from: o.symbol, fromQty: Number(o.amount), to: i.symbol, toQty: Number(i.amount) });
+  }
+  type Ev = { ts: string; kind: "trade" | "move" | "rename"; x: any };
+  const events: Ev[] = [
+    ...trades.map((t) => ({ ts: t.ts, kind: "trade" as const, x: t })),
+    ...moves.filter((m) => !used.has(m) && !m.tx_hash.startsWith("csv-fut")).map((m) => ({ ts: m.ts, kind: "move" as const, x: m })),
+    ...renameEv.map((r) => ({ ts: r.ts, kind: "rename" as const, x: r })),
+  ].sort((a, b) => new Date(a.ts).getTime() - new Date(b.ts).getTime());
   const txRows: any[] = [];
-  for (const t of trades ?? []) {
-    const ts = new Date(t.ts).getTime();
+  for (const ev of events) {
+    const ts = new Date(ev.ts).getTime();
+    if (ev.kind === "rename") { rename(ev.x.from, ev.x.fromQty, ev.x.to, ev.x.toQty, ev.ts); continue; }
+    if (ev.kind === "move") {
+      const m = ev.x, a = Number(m.amount);
+      if (m.direction === "out") sub(m.symbol, a, m.ts);
+      else {
+        // entrada (depósito, rendimento, ajuste): custo = preço do dia
+        const px = await usdAt(m.symbol, ts);
+        if (px) add(m.symbol, a, a * px, a * px * (await brlPerUsd(ts)), m.ts);
+      }
+      continue;
+    }
+    const t = ev.x;
     const bq = Number(t.base_qty), qq = Number(t.quote_qty);
     let usd: number | null = null;
     if (STABLE.has(t.quote)) usd = qq;
@@ -215,8 +262,13 @@ async function run(userId: string) {
     else { const px = await usdAt(t.quote, ts); if (px) usd = qq * px; }
     if (usd == null) { const px = await usdAt(t.base, ts); usd = px ? bq * px : 0; }
     const brl = t.quote === "BRL" ? qq : usd * (await brlPerUsd(ts));
-    const feeBase = t.fee_asset === t.base ? Number(t.fee || 0) : 0;
-    const feeQuote = t.fee_asset === t.quote ? Number(t.fee || 0) : 0;
+    if (RENAMES.has(`${t.quote}>${t.base}`)) {
+      rename(t.quote, qq, t.base, bq, t.ts);
+      txRows.push({ user_id: userId, wallet_id: null, source: "Binance", network: "binance", tx_hash: t.id, ts: t.ts, direction: "buy", symbol: t.base, amount: bq, quote_asset: t.quote, quote_amount: qq, counterparty: `Troca de token ${t.quote} → ${t.base}`, url: null });
+      continue;
+    }
+    const feeBase = t.kind !== "csv" && t.fee_asset === t.base ? Number(t.fee || 0) : 0;
+    const feeQuote = t.kind !== "csv" && t.fee_asset === t.quote ? Number(t.fee || 0) : 0;
     if (t.is_buy) {
       add(t.base, bq - feeBase, usd, brl, t.ts);
       sub(t.quote, qq, t.ts);
@@ -224,7 +276,8 @@ async function run(userId: string) {
       sub(t.base, bq, t.ts);
       add(t.quote, qq - feeQuote, usd, brl, t.ts);
     }
-    if (t.fee_asset && t.fee_asset !== t.base && t.fee_asset !== t.quote) sub(t.fee_asset, Number(t.fee || 0), t.ts);
+    // taxas pagas em outra moeda (ex.: BNB); nas operações do extrato elas já vêm somadas por mês
+    if (t.kind !== "csv" && t.fee_asset && t.fee_asset !== t.base && t.fee_asset !== t.quote) sub(t.fee_asset, Number(t.fee || 0), t.ts);
     txRows.push({
       user_id: userId, wallet_id: null, source: "Binance", network: "binance", tx_hash: t.id, ts: t.ts,
       direction: t.is_buy ? "buy" : "sell", symbol: t.base, amount: bq, quote_asset: t.quote, quote_amount: qq,
