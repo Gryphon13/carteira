@@ -808,11 +808,16 @@ async function computeHistory() {
     // saldo de hoje por "gaveta" (carteira + rede + ativo; a Binance conta como uma gaveta só)
     const bucket = (net, wid, sym) => (String(net).startsWith("binance") ? `binance||${sym}` : `${wid}|${net}|${sym}`);
     const symOf = (k) => k.slice(k.lastIndexOf("|") + 1);
-    const bal = new Map();
+    // moeda nativa em redes onde não vemos as "transferências internas" (ETH devolvido por um contrato,
+    // BNB recebido numa troca na PancakeSwap…): para essas, conta do passado para o presente, sem deixar ficar negativo
+    const NATIVE = { "bnb-mainnet": "BNB", "arb-mainnet": "ETH", "opt-mainnet": "ETH", "base-mainnet": "ETH", "avax-mainnet": "AVAX", "linea-mainnet": "ETH", "zksync-mainnet": "ETH", "scroll-mainnet": "ETH" };
+    const isFwd = (net, sym) => NATIVE[net] === sym;
+    const bal = new Map(), fwdNow = new Map();
     for (const h of S.holdings) {
       if (holdingFlag(h) || !valid(h.symbol)) continue;
       const k = bucket(h.network, h.wallet_id, h.symbol);
-      bal.set(k, (bal.get(k) || 0) + Number(h.amount));
+      const m = isFwd(h.network, h.symbol) ? fwdNow : bal;
+      m.set(k, (m.get(k) || 0) + Number(h.amount));
     }
     // movimentações (sem duplicar depósitos/saques da Binance que vieram pela API e pelo extrato)
     const seen = new Set(), list = [];
@@ -860,7 +865,7 @@ async function computeHistory() {
     });
     // percorre do presente para o passado
     list.sort((a, b) => b.ms - a.ms);
-    const add = (t, x, v) => { if (!syms.has(x)) return; const k = bucket(t.network, t.wallet_id, x); bal.set(k, (bal.get(k) || 0) + v); };
+    const add = (t, x, v) => { if (!syms.has(x) || isFwd(t.network, x)) return; const k = bucket(t.network, t.wallet_id, x); bal.set(k, (bal.get(k) || 0) + v); };
     let idx = 0;
     const pts = [];
     const lastB3 = {};
@@ -880,6 +885,30 @@ async function computeHistory() {
       }
       lastB3[id] = px;
     }
+    // séries "para frente" das moedas nativas sem transferências internas
+    const fwd = new Map();
+    const fwdTx = new Map();
+    for (const t of list) if ((t.direction === "in" || t.direction === "out") && isFwd(t.network, t.sym)) {
+      const k = bucket(t.network, t.wallet_id, t.sym);
+      (fwdTx.get(k) || fwdTx.set(k, []).get(k)).push(t);
+    }
+    for (const k of new Set([...fwdTx.keys(), ...fwdNow.keys()])) {
+      const txs = (fwdTx.get(k) || []).slice().sort((a, b) => a.ms - b.ms);
+      const arr = new Float64Array(days.length);
+      let q = 0, ti = 0;
+      for (let di = 0; di < days.length; di++) {
+        while (ti < txs.length && txs[ti].ms < days[di] + DAY) {
+          const t = txs[ti++];
+          q = Math.max(0, q + (t.direction === "in" ? 1 : -1) * Number(t.amount || 0));
+        }
+        arr[di] = q;
+      }
+      // acerta com o saldo real de hoje a partir da última movimentação
+      const delta = (fwdNow.get(k) || 0) - q;
+      const lastDay = txs.length ? Math.floor(txs[txs.length - 1].ms / DAY) * DAY : days[0];
+      for (let di = 0; di < days.length; di++) if (days[di] >= lastDay) arr[di] = Math.max(0, arr[di] + delta);
+      fwd.set(k, arr);
+    }
     const rf = manualRows().filter((a) => a.kind !== "b3");
     for (let di = days.length - 1; di >= 0; di--) {
       const d = days[di];
@@ -895,6 +924,12 @@ async function computeHistory() {
       for (const [k, q] of bal) {
         if (!(q > 0)) continue;
         if (firstOf.has(k) && d + DAY <= firstOf.get(k)) continue;
+        const p = pxUsd(symOf(k), d);
+        if (p) usd += q * p;
+      }
+      for (const [k, arr] of fwd) {
+        const q = arr[di];
+        if (!(q > 0)) continue;
         const p = pxUsd(symOf(k), d);
         if (p) usd += q * p;
       }
