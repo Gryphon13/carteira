@@ -212,3 +212,7 @@ code { font-family: var(--mono); font-size: 11px; background: var(--panel-2); pa
 html, body { overflow-x: hidden; }
 #d-movs td.det { white-space: normal; max-width: 280px; text-align: right; }
 .stat .v .sub2 { font-size: 11px; color: var(--muted); font-weight: 400; font-family: var(--mono); }
+
+/* Nome do local abreviado (mouse em cima mostra todos) */
+.asset > div { min-width: 0; }
+.nets-small.locs { max-width: 240px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: help; }

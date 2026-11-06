@@ -397,12 +397,15 @@ function renderPainel() {
   const head = `<tr>${th("sym", "Ativo")}${th("price", "Preço")}<th class="hide-sm">Preço médio</th>${th("ch", "24h")}${th("amount", "Quantidade", "hide-sm")}${th("value", "Valor")}<th class="hide-sm">% cart.</th>${th("pnl", "Resultado", "hide-sm")}</tr>`;
   const body = rows
     .map((r) => {
-      const nets = [...new Set(r.parts.map((p) => `${p.source} · ${NET[p.network] || p.network}`))].join(", ");
+      const locs = [...new Set(r.parts.map((p) => `${p.source} · ${NET[p.network] || p.network}`))];
+      const wallets = [...new Set(r.parts.map((p) => p.source))];
+      const nets = locs.length === 1 ? locs[0] : `${wallets[0]}${locs.length > 1 ? ` + ${locs.length - 1} ${locs.length - 1 === 1 ? "local" : "locais"}` : ""}`;
+      const netsTitle = locs.join("\n");
       const live = S.live[r.sym];
       const flash = live?.dir > 0 ? "flash-up" : live?.dir < 0 ? "flash-down" : "";
       if (live) live.dir = 0;
       return `<tr class="click ${r.hidden ? "dim" : ""}" data-sym="${esc(r.sym)}">
-        <td><div class="asset">${icon(r.sym)}<div><div class="sym">${esc(r.sym)}${r.flag ? ` <span class="badge warn">${r.flag}</span>` : ""}</div><div class="nets-small">${esc(nets)}</div></div></div></td>
+        <td><div class="asset">${icon(r.sym)}<div><div class="sym">${esc(r.sym)}${r.flag ? ` <span class="badge warn">${r.flag}</span>` : ""}</div><div class="nets-small locs" title="${esc(netsTitle)}">${esc(nets)}</div></div></div></td>
         <td><span class="price ${flash}">${dualUsd(r.price, price)}</span></td>
         <td class="hide-sm">${r.costUsd && r.amount ? `<span class="price">${dualUsd(r.costUsd / r.amount, price)}</span>` : '<span class="muted small">—</span>'}</td>
         <td><span class="pct ${cls(r.ch)}">${pct(r.ch)}</span></td>
