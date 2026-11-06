@@ -895,9 +895,12 @@ async function computeHistory() {
     // descarta o começo em que ainda não havia nada
     while (pts.length > 2 && pts[0].brl < 1) pts.shift();
     S.hist = pts;
-    const semPreco = toFetch.filter((x) => !K[x] && (bal.get(x) || list.some((t) => t.sym === x)));
+    const nowVal = Object.fromEntries(cryptoRows().map((r) => [r.sym, r.value || 0]));
+    const semPreco = toFetch.filter((x) => !K[x] && nowVal[x] > 1);
+    const binMoves = list.some((t) => t.network === "binance" && (t.direction === "in" || t.direction === "out") && t.ms < Date.now() - 100 * DAY);
     note.textContent = `Reconstruído desde ${new Date(pts[0].time * 1000).toLocaleDateString("pt-BR")} com ${list.length} movimentações e o fechamento de cada dia (Binance para cripto, Yahoo para a B3).`
-      + (semPreco.length ? ` Sem cotação histórica na Binance (ficam fora do passado): ${semPreco.slice(0, 12).join(", ")}${semPreco.length > 12 ? "…" : ""}.` : "");
+      + (semPreco.length ? ` Sem cotação histórica na Binance (ficam fora do passado): ${semPreco.join(", ")}.` : "")
+      + (binMoves ? "" : " ⚠️ Ainda faltam os depósitos e saques antigos da Binance: até você importar o extrato (Cadastros → Binance → Importar extrato), alguns períodos aparecem maiores ou menores do que foram de verdade.");
     renderChart();
   } finally {
     histBusy = false;
@@ -954,8 +957,31 @@ async function pieImage(mode, th) {
     ? { bg: "#f4f5f7", card: "#ffffff", line: "#e4e6eb", text: "#16171b", muted: "#6a6f7c" }
     : { bg: "#0b0b0d", card: "#151518", line: "#26262c", text: "#f3f3f5", muted: "#8e8e99" };
   await document.fonts?.ready;
-  const W = 1080, rows = data.length, legendH = rows * 64 + (data.some((d) => d.other) ? 70 : 0);
-  const H = 160 + 640 + legendH + 120;
+  const W = 1080, rows = data.length;
+  // "Outros": no máximo 2 linhas de nomes
+  const otherD = data.find((d) => d.other);
+  const oLines = [];
+  if (otherD) {
+    const m = document.createElement("canvas").getContext("2d");
+    m.font = "400 24px Inter, sans-serif";
+    const names = otherD.other;
+    let line = "Outros: ", used = 0;
+    for (const n of names) {
+      const piece = n + ", ";
+      if (m.measureText(line + piece).width > W - 260) {
+        oLines.push(line);
+        line = "";
+        if (oLines.length === 2) break;
+      }
+      line += piece;
+      used++;
+    }
+    if (oLines.length < 2 && line) oLines.push(line);
+    const rest = names.length - used;
+    oLines[oLines.length - 1] = oLines[oLines.length - 1].replace(/, $/, "") + (rest > 0 ? ` e mais ${rest}` : "");
+  }
+  const legendH = rows * 64 + oLines.length * 32 + (oLines.length ? 20 : 0);
+  const H = 160 + 640 + legendH + 130;
   const cv = document.createElement("canvas");
   cv.width = W; cv.height = H;
   const x = cv.getContext("2d");
@@ -1000,16 +1026,8 @@ async function pieImage(mode, th) {
     x.fillStyle = d.color; roundRect(x, 160, y + 24, Math.max(8, (W - 270) * (d.brl / total)), 8, 4); x.fill();
     y += 64;
   }
-  const other = data.find((d) => d.other);
-  if (other) {
-    x.fillStyle = C.muted; x.font = "400 24px Inter, sans-serif";
-    let line = "Outros: ", ly = y + 4;
-    for (const n of other.other) {
-      if (x.measureText(line + n + ", ").width > W - 220) { x.fillText(line, 110, ly); line = ""; ly += 32; }
-      line += n + ", ";
-    }
-    x.fillText(line.replace(/, $/, ""), 110, ly);
-  }
+  x.fillStyle = C.muted; x.font = "400 24px Inter, sans-serif";
+  oLines.forEach((l, i) => x.fillText(l.replace(/, $/, ""), 110, y + 4 + i * 32));
   x.fillStyle = C.muted; x.font = "400 22px Inter, sans-serif"; x.textAlign = "center";
   x.fillText("Porcentagens do patrimônio · valores não exibidos", W / 2, H - 80);
   return cv;
