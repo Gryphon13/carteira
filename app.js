@@ -111,7 +111,67 @@ function color(sym) {
   for (const c of sym) h = (h * 31 + c.charCodeAt(0)) % 360;
   return `hsl(${h} 55% 42%)`;
 }
-const icon = (sym) => `<span class="ico" style="background:${color(sym)}">${esc(sym.slice(0, 4))}</span>`;
+// ícones: logo do CoinGecko (cripto) ou do brapi (B3); se não houver, bolinha com as letras
+const fallbackIco = (sym) => `<span class="ico" style="background:${color(sym)}">${esc(sym.slice(0, 4))}</span>`;
+function logoUrl(sym, kind) {
+  if (kind === "b3") return /^[A-Z0-9]{4,7}$/.test(sym) ? `https://icons.brapi.dev/icons/${sym.toUpperCase()}.svg` : null;
+  if (kind === "rf") return null;
+  return CGM.map[sym]?.image || null;
+}
+function icon(sym, kind, flag) {
+  const url = flag ? null : logoUrl(sym, kind);
+  if (!url) return fallbackIco(sym);
+  return `<img class="ico img" src="${esc(url)}" alt="" loading="lazy" data-sym="${esc(sym)}" onerror="icoFail(this)" />`;
+}
+window.icoFail = (img) => {
+  const sym = img.dataset.sym || "?";
+  const span = document.createElement("span");
+  span.className = "ico";
+  span.style.background = color(sym);
+  span.textContent = sym.slice(0, 4);
+  img.replaceWith(span);
+};
+
+// ------------------------------------------------------------------ CoinGecko (logos e informações)
+const CG = "https://api.coingecko.com/api/v3";
+const CGM = (() => {
+  try { return JSON.parse(localStorage.getItem("carteira.cgm") || "") || { map: {} }; } catch { return { map: {} }; }
+})();
+const saveCGM = () => { try { localStorage.setItem("carteira.cgm", JSON.stringify(CGM)); } catch { /* */ } };
+let cgBusy = false;
+async function loadMarkets() {
+  if (cgBusy) return;
+  const syms = new Set();
+  for (const h of S.holdings) if (!holdingFlag(h) && /^[A-Z0-9]{2,10}$/.test(h.symbol)) syms.add(h.symbol);
+  const stale = [...syms].filter((x) => !CGM.map[x] || Date.now() - (CGM.map[x].at || 0) > (CGM.map[x].id ? 15 : 24 * 60) * 60e3);
+  if (!stale.length) return;
+  cgBusy = true;
+  try {
+    for (let i = 0; i < stale.length; i += 60) {
+      const part = stale.slice(i, i + 60);
+      const r = await fetch(`${CG}/coins/markets?vs_currency=usd&include_tokens=top&per_page=250&symbols=${part.map((x) => x.toLowerCase()).join(",")}`);
+      if (!r.ok) break;
+      const list = await r.json();
+      const got = new Set();
+      for (const x of list) {
+        const k = String(x.symbol || "").toUpperCase();
+        if (got.has(k)) continue; // fica com o de maior valor de mercado
+        got.add(k);
+        CGM.map[k] = {
+          at: Date.now(), id: x.id, name: x.name, image: String(x.image || "").replace("/large/", "/small/"), rank: x.market_cap_rank,
+          mcap: x.market_cap, fdv: x.fully_diluted_valuation, vol: x.total_volume, circ: x.circulating_supply, total: x.total_supply, max: x.max_supply,
+          ath: x.ath, athDate: x.ath_date, athPct: x.ath_change_percentage, atl: x.atl, atlDate: x.atl_date, atlPct: x.atl_change_percentage,
+          high24: x.high_24h, low24: x.low_24h,
+        };
+      }
+      for (const k of part) if (!got.has(k)) CGM.map[k] = { at: Date.now(), id: null };
+    }
+    saveCGM();
+    renderPainel();
+    renderMovs();
+  } catch { /* sem internet ou CoinGecko fora: fica com as letras */ }
+  cgBusy = false;
+}
 
 // ------------------------------------------------------------------ câmbio
 function rate() {
@@ -281,6 +341,7 @@ async function loadAll() {
   connectLive();
   await loadQuotes();
   renderAll();
+  loadMarkets();
 }
 
 async function loadQuotes() {
@@ -408,7 +469,7 @@ function renderPainel() {
       const flash = live?.dir > 0 ? "flash-up" : live?.dir < 0 ? "flash-down" : "";
       if (live) live.dir = 0;
       return `<tr class="click ${r.hidden ? "dim" : ""}" data-sym="${esc(r.sym)}">
-        <td><div class="asset">${icon(r.sym)}<div><div class="sym">${esc(r.sym)}${r.flag ? ` <span class="badge warn">${r.flag}</span>` : ""}</div><div class="nets-small locs" title="${esc(netsTitle)}">${esc(nets)}</div></div></div></td>
+        <td><div class="asset">${icon(r.sym, "crypto", r.flag)}<div><div class="sym">${esc(r.sym)}${r.flag ? ` <span class="badge warn">${r.flag}</span>` : ""}</div><div class="nets-small locs" title="${esc(netsTitle)}">${esc(nets)}</div></div></div></td>
         <td><span class="price ${flash}">${dualUsd(r.price, price)}</span></td>
         <td class="hide-sm">${r.costUsd && r.amount ? `<span class="price">${dualUsd(r.costUsd / r.amount, price)}</span>` : '<span class="muted small">—</span>'}</td>
         <td><span class="pct ${cls(r.ch)}">${pct(r.ch)}</span></td>
@@ -436,7 +497,7 @@ function renderPainel() {
     `<tr>${th("sym", "Ativo")}${th("price", "Preço")}${th("ch", "Dia")}${th("amount", "Quantidade", "hide-sm")}${th("value", "Valor")}${th("pnl", "Resultado", "hide-sm")}</tr>` +
     (mr
       .map((a) => `<tr class="click" data-mid="${a.id}">
-          <td><div class="asset">${icon(a.symbol)}<div><div class="sym">${esc(a.symbol)}</div><div class="nets-small">${esc(a.name || a.local)}</div></div></div></td>
+          <td><div class="asset">${icon(a.symbol, a.kind === "b3" ? "b3" : "rf")}<div><div class="sym">${esc(a.symbol)}</div><div class="nets-small">${esc(a.name || a.local)}</div></div></div></td>
           <td><span class="price">${a.kind === "b3" ? dualBrl(a.px, price) : "—"}</span></td>
           <td><span class="pct ${cls(a.ch)}">${pct(a.ch)}</span></td>
           <td class="hide-sm">${a.kind === "b3" ? qty(Number(a.quantity)) : ""}</td>
@@ -544,12 +605,42 @@ function pieHover(i) {
   document.querySelectorAll(".pl-row").forEach((p) => p.classList.toggle("on", p.dataset.i === String(i)));
 }
 
+const isSpamSym = (sym) => {
+  const u = String(sym || "").toUpperCase();
+  return S.holdings.some((h) => h.symbol === u && holdingFlag(h) === "spam") || /[\s#$:/]|\.(io|com|org|net|app|xyz)$/i.test(u) ? "spam" : null;
+};
+// trocas on-chain: na mesma transação saiu um token e entrou outro
+let swapIdx = null, swapIdxLen = -1;
+function swapPeer(t) {
+  if (t.network === "binance" || !t.tx_hash) return null;
+  if (swapIdxLen !== S.txs.length) {
+    swapIdx = new Map();
+    for (const x of S.txs) {
+      const k = `${x.network}|${x.tx_hash}`;
+      (swapIdx.get(k) || swapIdx.set(k, []).get(k)).push(x);
+    }
+    swapIdxLen = S.txs.length;
+  }
+  const group = swapIdx.get(`${t.network}|${t.tx_hash}`) || [];
+  const want = t.direction === "in" ? "out" : t.direction === "out" ? "in" : null;
+  if (!want) return null;
+  const peers = group.filter((x) => x.direction === want && (x.symbol || "").toUpperCase() !== (t.symbol || "").toUpperCase());
+  if (!peers.length) return null;
+  // se saiu ETH e entraram 2 tokens, usa o de maior quantidade como contraparte
+  return peers.sort((a, b) => Number(b.amount || 0) - Number(a.amount || 0))[0];
+}
+
 // movimentações de um ativo (inclui quando ele foi usado para pagar outra compra)
 function assetMovs(sym) {
   const out = [];
   for (const t of S.txs) {
     const base = (t.symbol || "").toUpperCase(), quote = (t.quote_asset || "").toUpperCase();
-    if (base === sym) {
+    const peer = base === sym ? swapPeer(t) : null;
+    if (peer) {
+      const n = Number(t.amount), m = Number(peer.amount);
+      out.push({ t, dir: t.direction === "in" ? "buy" : "sell", amount: n, unit: n ? m / n : null, unitAsset: (peer.symbol || "").toUpperCase(), total: m, swapped: true,
+        desc: t.direction === "in" ? `troca: −${qty(m)} ${peer.symbol}` : `troca: +${qty(m)} ${peer.symbol}` });
+    } else if (base === sym) {
       out.push({ t, dir: t.direction, amount: Number(t.amount), unit: t.quote_amount && t.amount ? Number(t.quote_amount) / Number(t.amount) : null, unitAsset: quote || null, total: t.quote_amount != null ? Number(t.quote_amount) : null, desc: t.quote_asset ? t.counterparty : t.counterparty });
     } else if (quote === sym && (t.direction === "buy" || t.direction === "sell")) {
       out.push({ t, dir: t.direction === "buy" ? "sell" : "buy", amount: Number(t.quote_amount), unit: Number(t.amount) / Number(t.quote_amount), unitAsset: base, total: Number(t.amount), desc: t.direction === "buy" ? `usado para comprar ${base}` : `recebido pela venda de ${base}` , swapped: true });
@@ -595,7 +686,48 @@ function showDetailTab(tab) {
   $("#d-chart").classList.toggle("hidden", tab !== "chart");
   $("#d-movs").classList.toggle("hidden", tab !== "movs");
   $("#d-evo").classList.toggle("hidden", tab !== "evo");
+  $("#d-info").classList.toggle("hidden", tab !== "info");
   if (tab === "evo") renderEvolution();
+  if (tab === "info") renderInfo();
+}
+
+// ------------------------------------------------------------------ tema claro / escuro
+const theme = () => (document.documentElement.dataset.theme === "light" ? "light" : "dark");
+const cssVar = (n) => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+function rgba(hex, a) {
+  const h = hex.replace("#", "");
+  const n = parseInt(h.length === 3 ? h.split("").map((c) => c + c).join("") : h, 16);
+  return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},${a})`;
+}
+const chartOpts = () => ({
+  layout: { background: { color: "transparent" }, textColor: cssVar("--muted"), fontFamily: "Inter" },
+  grid: { vertLines: { visible: false }, horzLines: { color: cssVar("--grid") } },
+});
+const areaOpts = (c) => ({ lineColor: c, topColor: rgba(c, theme() === "light" ? 0.22 : 0.32), bottomColor: rgba(c, 0) });
+const SUN = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>';
+const MOON = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>';
+let lastAdv = null; // último gráfico do TradingView aberto no detalhe
+function advChart(tv, interval) {
+  lastAdv = { tv, interval };
+  tvWidget($("#d-chart"), "advanced-chart", {
+    autosize: true, symbol: tv, interval, timezone: "America/Sao_Paulo", theme: theme(), style: "1",
+    locale: "br", allow_symbol_change: true, hide_side_toolbar: false, calendar: false, support_host: "https://www.tradingview.com",
+    backgroundColor: cssVar("--panel"), gridColor: cssVar("--grid"),
+  });
+}
+function setTheme(t) {
+  document.documentElement.dataset.theme = t;
+  store("theme", t);
+  $("#theme").innerHTML = t === "light" ? MOON : SUN;
+  $("#theme").title = t === "light" ? "Tema escuro" : "Tema claro";
+  document.querySelector('meta[name="theme-color"]')?.setAttribute("content", cssVar("--bg"));
+  if (chart) { chart.applyOptions(chartOpts()); series.applyOptions(areaOpts(cssVar("--chart"))); }
+  if (evoChart) evoChart.applyOptions(chartOpts());
+  if (!S.user) return;
+  renderTape();
+  renderWatchlist();
+  renderPie();
+  if (lastAdv && !$("#modal").classList.contains("hidden") && $("#d-chart").innerHTML) advChart(lastAdv.tv, lastAdv.interval);
 }
 
 // gráfico do patrimônio
@@ -605,14 +737,13 @@ function renderChart() {
   if (!window.LightweightCharts) return;
   if (!chart) {
     chart = LightweightCharts.createChart(el, {
-      layout: { background: { color: "transparent" }, textColor: "#8a9ab0", fontFamily: "Inter" },
-      grid: { vertLines: { visible: false }, horzLines: { color: "#1c2632" } },
+      ...chartOpts(),
       rightPriceScale: { borderVisible: false },
       timeScale: { borderVisible: false, timeVisible: true },
       localization: { locale: "pt-BR", priceFormatter: (v) => money(v) },
       autoSize: true,
     });
-    series = chart.addAreaSeries({ lineColor: "#10b981", topColor: "rgba(16,185,129,.35)", bottomColor: "rgba(16,185,129,0)", lineWidth: 2 });
+    series = chart.addAreaSeries({ ...areaOpts(cssVar("--chart")), lineWidth: 2 });
   }
   const since = S.range ? Date.now() - S.range * 86400e3 : 0;
   const pts = [];
@@ -661,7 +792,7 @@ function renderWatchlist() {
   const height = Math.min(900, 80 + groups.length * 36 + n * 40);
   $("#tv-watch").style.height = height + "px";
   tvWidget($("#tv-watch"), "market-quotes", {
-    width: "100%", height, isTransparent: true, colorTheme: "dark", locale: "br", showSymbolLogo: true,
+    width: "100%", height, isTransparent: true, colorTheme: theme(), locale: "br", showSymbolLogo: true,
     symbolsGroups: groups.map((g) => ({ name: g.name, symbols: g.symbols.map((x) => ({ name: x, displayName: x.split(":")[1] })) })),
   });
 }
@@ -673,7 +804,7 @@ function renderTape() {
   if (!top.length && !watch.length) symbols.unshift({ proName: "BINANCE:BTCUSDT", title: "BTC" }, { proName: "BINANCE:ETHUSDT", title: "ETH" });
   const seen = new Set();
   symbols = symbols.filter((x) => !seen.has(x.proName) && seen.add(x.proName)).slice(0, 40);
-  tvWidget($("#tv-tape"), "ticker-tape", { symbols, showSymbolLogo: true, isTransparent: true, displayMode: "adaptive", colorTheme: "dark", locale: "br" });
+  tvWidget($("#tv-tape"), "ticker-tape", { symbols, showSymbolLogo: true, isTransparent: true, displayMode: "adaptive", colorTheme: theme(), locale: "br" });
 }
 function tvWidget(el, name, cfg) {
   el.innerHTML = "";
@@ -695,7 +826,10 @@ function tvWidget(el, name, cfg) {
 // detalhe do ativo
 function openAsset(sym, isB3 = false) {
   const tv = isB3 ? (S.manual.find((a) => a.symbol === sym)?.tv_symbol || `BMFBOVESPA:${sym.toUpperCase()}`) : tvSymbol(sym);
-  $("#d-title").textContent = sym;
+  S.detail = { kind: isB3 ? "b3" : "crypto", sym };
+  const fl = !isB3 && (cryptoRows(true).find((x) => x.sym === sym)?.flag || null);
+  $("#d-title").innerHTML = `${icon(sym, isB3 ? "b3" : "crypto", fl)}<span>${esc(sym)}</span>${!isB3 && CGM.map[sym]?.name ? `<span class="muted d-name">${esc(CGM.map[sym].name)}</span>` : ""}`;
+  $("#d-info").innerHTML = "";
   $("#d-flag").innerHTML = "";
   $("#d-tv-link").href = `https://br.tradingview.com/chart/?symbol=${encodeURIComponent(tv)}`;
   $("#d-form").classList.toggle("hidden", isB3);
@@ -746,17 +880,174 @@ function openAsset(sym, isB3 = false) {
     ].map(([k, v]) => `<div class="stat"><div class="muted small">${k}</div><div class="v">${v}</div></div>`).join("");
     $("#d-where").innerHTML = `<p class="muted">${esc(a?.notes || "")}</p><a class="btn ghost" href="https://br.tradingview.com/chart/?symbol=${encodeURIComponent(tv)}" target="_blank" rel="noopener">Abrir no TradingView ↗</a>`;
   }
-  tvWidget($("#d-chart"), "advanced-chart", {
-    autosize: true, symbol: tv, interval: "240", timezone: "America/Sao_Paulo", theme: "dark", style: "1",
-    locale: "br", allow_symbol_change: true, hide_side_toolbar: false, calendar: false, support_host: "https://www.tradingview.com",
-  });
+  advChart(tv, "240");
   $("#d-tabs").classList.toggle("hidden", isB3);
   $("#d-tabs").querySelector('[data-t="chart"]').classList.remove("hidden");
+  $("#d-tabs").querySelector('[data-t="movs"]').classList.remove("hidden");
+  $("#d-tabs").querySelector('[data-t="info"]').classList.toggle("hidden", isB3);
   $("#d-tabs").querySelector('[data-t="evo"]').classList.add("hidden");
   $("#d-evo").innerHTML = "";
   if (!isB3) renderAssetMovs(sym);
   showDetailTab("chart");
   $("#modal").classList.remove("hidden");
+}
+
+// ------------------------------------------------------------------ aba Informações
+const cgDetail = new Map();
+const big = (v, ccy) => {
+  if (v == null || !isFinite(v)) return "—";
+  if (S.hide) return "•••••";
+  const sym = ccy === "BRL" ? "R$" : "US$";
+  const a = Math.abs(v);
+  const [d, u] = a >= 1e12 ? [1e12, " tri"] : a >= 1e9 ? [1e9, " bi"] : a >= 1e6 ? [1e6, " mi"] : a >= 1e3 ? [1e3, " mil"] : [1, ""];
+  return `${sym} ${(v / d).toLocaleString("pt-BR", { maximumFractionDigits: d === 1 ? 2 : 2 })}${u}`;
+};
+const units = (v) => (v == null || !isFinite(v) ? "—" : Number(v).toLocaleString("pt-BR", { maximumFractionDigits: 0 }));
+const bothBig = (usd) => `${big(usd, "USD")}<div class="sub2">${big(usd != null && rate() ? usd * rate() : null, "BRL")}</div>`;
+const bothPx = (usd) => `${price(usd, "USD")}<div class="sub2">${price(usd != null && rate() ? usd * rate() : null, "BRL")}</div>`;
+const dt = (d) => (d ? new Date(d).toLocaleDateString("pt-BR") : "");
+const statBox = ([k, v]) => `<div class="stat"><div class="muted small">${k}</div><div class="v">${v}</div></div>`;
+const slugify = (x) => String(x || "").toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+const EXPLORER = {
+  ethereum: "https://etherscan.io/token/", "binance-smart-chain": "https://bscscan.com/token/", "polygon-pos": "https://polygonscan.com/token/",
+  "arbitrum-one": "https://arbiscan.io/token/", base: "https://basescan.org/token/", "optimistic-ethereum": "https://optimistic.etherscan.io/token/",
+  avalanche: "https://snowtrace.io/token/", solana: "https://solscan.io/token/", tron: "https://tronscan.org/#/token20/",
+  "polygon-zkevm": "https://zkevm.polygonscan.com/token/", linea: "https://lineascan.build/token/", zksync: "https://explorer.zksync.io/address/",
+};
+function linkBtn(href, label) {
+  if (!href || !/^https?:\/\//i.test(href)) return "";
+  return `<a class="lnk" href="${esc(href)}" target="_blank" rel="noopener noreferrer">${esc(label)} ↗</a>`;
+}
+function plainText(html) {
+  const d = document.createElement("div");
+  d.innerHTML = String(html || "").replace(/<br\s*\/?>/gi, "\n").replace(/<\/p>/gi, "\n\n"); // só lido como texto, nunca inserido
+  return (d.textContent || "").replace(/\n{3,}/g, "\n\n").trim();
+}
+async function renderInfo() {
+  const el = $("#d-info");
+  const d = S.detail;
+  if (!d || el.dataset.for === `${d.kind}:${d.sym}` && el.innerHTML) return;
+  el.dataset.for = `${d.kind}:${d.sym}`;
+  el.innerHTML = '<p class="muted">Carregando informações…</p>';
+  try {
+    if (d.kind === "b3") return await renderInfoB3(el, d.sym);
+    const m = CGM.map[d.sym];
+    if (!m?.id) {
+      el.innerHTML = `<p class="muted">Não encontrei <b>${esc(d.sym)}</b> no CoinGecko (token pequeno ou falso).</p>
+        <div class="links">${linkBtn(`https://www.coingecko.com/pt/search?query=${encodeURIComponent(d.sym)}`, "Procurar no CoinGecko")}${linkBtn(`https://coinmarketcap.com/search/?q=${encodeURIComponent(d.sym)}`, "Procurar no CoinMarketCap")}</div>`;
+      return;
+    }
+    let c = cgDetail.get(m.id);
+    if (!c || Date.now() - c.at > 10 * 60e3) {
+      const r = await fetch(`${CG}/coins/${encodeURIComponent(m.id)}?localization=false&tickers=false&market_data=true&community_data=false&developer_data=false&sparkline=false`);
+      if (r.status === 429) throw new Error("O CoinGecko limitou as consultas por um minuto. Tente de novo daqui a pouco.");
+      if (!r.ok) throw new Error(`CoinGecko respondeu ${r.status}`);
+      c = { at: Date.now(), j: await r.json() };
+      cgDetail.set(m.id, c);
+    }
+    if (S.detail !== d) return;
+    const j = c.j, md = j.market_data || {};
+    const U = (o) => (o && typeof o === "object" ? o.usd : o);
+    const circ = md.circulating_supply, max = md.max_supply, tot = md.total_supply;
+    const circPct = circ && (max || tot) ? circ / (max || tot) : null;
+    const L = j.links || {};
+    const desc = plainText(j.description?.pt || j.description?.en || "");
+    const contracts = Object.entries(j.detail_platforms || {}).filter(([, v]) => v?.contract_address);
+    const slug = j.web_slug || j.id;
+    const changes = [["24h", md.price_change_percentage_24h], ["7d", md.price_change_percentage_7d], ["30d", md.price_change_percentage_30d], ["1 ano", md.price_change_percentage_1y]];
+    el.innerHTML = `
+      <div class="info-head">
+        ${j.market_cap_rank ? `<span class="rank">#${j.market_cap_rank}</span>` : ""}
+        <b>${esc(j.name)}</b> <span class="muted">${esc(String(j.symbol || "").toUpperCase())}</span>
+        ${(j.categories || []).filter(Boolean).slice(0, 5).map((x) => `<span class="badge">${esc(x)}</span>`).join("")}
+      </div>
+      <div class="d-stats">${[
+        ["Valor de mercado", bothBig(U(md.market_cap))],
+        ["Valor totalmente diluído", bothBig(U(md.fully_diluted_valuation))],
+        ["Volume 24h", bothBig(U(md.total_volume))],
+        ["Máx. / mín. 24h", `${price(U(md.high_24h), "USD")}<div class="sub2">${price(U(md.low_24h), "USD")}</div>`],
+      ].map(statBox).join("")}</div>
+      <div class="info-grid">
+        <div class="info-box">
+          <h3>Fornecimento</h3>
+          <div class="kv"><span>Em circulação</span><b>${units(circ)} ${esc(String(j.symbol || "").toUpperCase())}</b></div>
+          <div class="kv"><span>Fornecimento total</span><b>${units(tot)}</b></div>
+          <div class="kv"><span>Fornecimento máximo</span><b>${md.max_supply_infinite ? "∞ sem limite" : units(max)}</b></div>
+          ${circPct ? `<div class="bar"><i style="width:${Math.min(100, circPct * 100).toFixed(1)}%;background:var(--accent)"></i></div><div class="muted small">${(circPct * 100).toFixed(1)}% do ${max ? "máximo" : "total"} já está em circulação</div>` : ""}
+        </div>
+        <div class="info-box">
+          <h3>Recordes de preço</h3>
+          <div class="kv"><span>Máxima histórica</span><b>${bothPx(U(md.ath))}</b></div>
+          <div class="kv"><span>em</span><b>${dt(U(md.ath_date))} <span class="pct ${cls(U(md.ath_change_percentage))}">${U(md.ath_change_percentage) != null ? pct(U(md.ath_change_percentage) / 100) + " desde lá" : ""}</span></b></div>
+          <div class="kv"><span>Mínima histórica</span><b>${bothPx(U(md.atl))}</b></div>
+          <div class="kv"><span>em</span><b>${dt(U(md.atl_date))} <span class="pct ${cls(U(md.atl_change_percentage))}">${U(md.atl_change_percentage) != null ? pct(U(md.atl_change_percentage) / 100) + " desde lá" : ""}</span></b></div>
+        </div>
+        <div class="info-box">
+          <h3>Variação do preço</h3>
+          ${changes.map(([k, v]) => `<div class="kv"><span>${k}</span><b class="pct ${cls(v)}">${v != null ? pct(v / 100) : "—"}</b></div>`).join("")}
+          ${j.genesis_date ? `<div class="kv"><span>Lançamento</span><b>${dt(j.genesis_date)}</b></div>` : ""}
+          ${j.hashing_algorithm ? `<div class="kv"><span>Algoritmo</span><b>${esc(j.hashing_algorithm)}</b></div>` : ""}
+        </div>
+      </div>
+      <h3>Links</h3>
+      <div class="links">
+        ${(L.homepage || []).filter(Boolean).slice(0, 1).map((u) => linkBtn(u, "Site do projeto")).join("")}
+        ${linkBtn(L.whitepaper, "Whitepaper")}
+        ${(L.blockchain_site || []).filter(Boolean).slice(0, 4).map((u) => linkBtn(u, "Explorador: " + u.replace(/^https?:\/\/(www\.)?/, "").split("/")[0])).join("")}
+        ${(L.repos_url?.github || []).slice(0, 1).map((u) => linkBtn(u, "GitHub")).join("")}
+        ${L.twitter_screen_name ? linkBtn(`https://x.com/${L.twitter_screen_name}`, "X (Twitter)") : ""}
+        ${linkBtn(L.subreddit_url, "Reddit")}
+        ${L.telegram_channel_identifier ? linkBtn(`https://t.me/${L.telegram_channel_identifier}`, "Telegram") : ""}
+        ${linkBtn(`https://www.coingecko.com/pt/moedas/${slug}`, "CoinGecko")}
+        ${linkBtn(`https://coinmarketcap.com/currencies/${slugify(j.name)}/`, "CoinMarketCap")}
+      </div>
+      ${contracts.length ? `<h3>Endereços do contrato</h3><div class="contracts">${contracts.slice(0, 8).map(([net, v]) => `
+        <div class="kv"><span>${esc(net.replace(/-/g, " "))}</span><b><span class="cp mono">${esc(v.contract_address)}</span>
+        <button type="button" class="btn small ghost" data-copy="${esc(v.contract_address)}" title="Copiar">Copiar</button>
+        ${EXPLORER[net] ? linkBtn(EXPLORER[net] + v.contract_address, "ver") : ""}</b></div>`).join("")}</div>` : ""}
+      ${desc ? `<h3>Sobre</h3><details class="about"><summary>${esc(desc.slice(0, 320))}${desc.length > 320 ? "… <span class='lnk'>ler mais</span>" : ""}</summary><p>${esc(desc.slice(320))}</p></details>` : ""}
+      <p class="muted small">Dados do CoinGecko · atualizados ${ago(md.last_updated || j.last_updated)}.</p>`;
+  } catch (e) {
+    el.dataset.for = "";
+    el.innerHTML = `<p class="err">${esc(e.message || e)}</p>`;
+  }
+}
+async function renderInfoB3(el, sym) {
+  const { data, error } = await sb.functions.invoke("quotes", { body: { info: sym }, region: REGION });
+  if (error || !data?.info) throw new Error("Não consegui buscar os dados desta ação agora.");
+  const i = data.info;
+  const fromAth = i.ath && i.price ? i.price / i.ath - 1 : null;
+  el.innerHTML = `
+    <div class="info-head"><b>${esc(i.name || sym)}</b> <span class="muted">${esc(sym)} · ${esc(i.exchange || "B3")}</span></div>
+    <div class="d-stats">${[
+      ["Preço", `${price(i.price, "BRL")}<div class="sub2">${price(i.price && rate() ? i.price / rate() : null, "USD")}</div>`],
+      ["Máx. / mín. do dia", `${price(i.dayHigh, "BRL")}<div class="sub2">${price(i.dayLow, "BRL")}</div>`],
+      ["Máx. / mín. 52 semanas", `${price(i.w52High, "BRL")}<div class="sub2">${price(i.w52Low, "BRL")}</div>`],
+      ["Volume do dia", units(i.volume)],
+    ].map(statBox).join("")}</div>
+    <div class="info-grid">
+      <div class="info-box">
+        <h3>Recordes de preço (fechamento mensal)</h3>
+        <div class="kv"><span>Máxima histórica</span><b>${price(i.ath, "BRL")}</b></div>
+        <div class="kv"><span>em</span><b>${i.athDate ? new Date(i.athDate * 1000).toLocaleDateString("pt-BR", { month: "long", year: "numeric" }) : "—"} <span class="pct ${cls(fromAth)}">${fromAth != null ? pct(fromAth) + " desde lá" : ""}</span></b></div>
+        <div class="kv"><span>Mínima histórica</span><b>${price(i.atl, "BRL")}</b></div>
+        <div class="kv"><span>em</span><b>${i.atlDate ? new Date(i.atlDate * 1000).toLocaleDateString("pt-BR", { month: "long", year: "numeric" }) : "—"}</b></div>
+      </div>
+      <div class="info-box">
+        <h3>Variação</h3>
+        ${[["1 mês", i.r1m], ["12 meses", i.r1y], ["5 anos", i.r5y]].map(([k, v]) => `<div class="kv"><span>${k}</span><b class="pct ${cls(v)}">${v != null ? pct(v) : "—"}</b></div>`).join("")}
+        ${i.first ? `<div class="kv"><span>Histórico desde</span><b>${new Date(i.first * 1000).getFullYear()}</b></div>` : ""}
+      </div>
+    </div>
+    <h3>Links</h3>
+    <div class="links">
+      ${linkBtn(`https://statusinvest.com.br/acoes/${sym.toLowerCase()}`, "Status Invest (indicadores e dividendos)")}
+      ${linkBtn(`https://investidor10.com.br/acoes/${sym.toLowerCase()}/`, "Investidor10")}
+      ${linkBtn(`https://br.tradingview.com/symbols/BMFBOVESPA-${sym}/`, "TradingView")}
+      ${linkBtn(`https://finance.yahoo.com/quote/${sym}.SA`, "Yahoo Finance")}
+      ${/^PETR/.test(sym) ? linkBtn("https://www.investidorpetrobras.com.br/", "Relações com investidores") : ""}
+    </div>
+    <p class="muted small">Cotação com atraso de ~15 min (Yahoo Finance).</p>`;
 }
 
 // movimentações
@@ -776,12 +1067,14 @@ function renderMovs() {
       .map((t) => {
         const p = livePrice((t.symbol || "").toUpperCase(), prices[(t.symbol || "").toUpperCase()]);
         const v = p != null && t.amount != null ? p * Number(t.amount) : null;
+        const peer = swapPeer(t);
         let cp = t.counterparty ? (t.counterparty.length > 26 && !t.quote_asset ? t.counterparty.slice(0, 10) + "…" + t.counterparty.slice(-8) : t.counterparty) : "";
+        if (peer) cp = `troca ${t.direction === "in" ? "por" : "em"} ${qty(Number(peer.amount))} ${peer.symbol}`;
         if (t.quote_asset) cp += ` · ${qty(Number(t.quote_amount))} ${t.quote_asset}`;
         return `<tr>
           <td>${t.ts ? new Date(t.ts).toLocaleString("pt-BR", { dateStyle: "short", timeStyle: "short" }) : "—"}</td>
-          <td><span class="${t.direction === "in" || t.direction === "buy" ? "up" : t.direction === "out" || t.direction === "sell" ? "down" : ""}">${dname[t.direction] || t.direction}</span></td>
-          <td><b>${esc(t.symbol || "")}</b> <span class="nets-small">${esc(NET[t.network] || t.network)}</span></td>
+          <td><span class="${t.direction === "in" || t.direction === "buy" ? "up" : t.direction === "out" || t.direction === "sell" ? "down" : ""}">${peer ? (t.direction === "in" ? "Troca (entrou)" : "Troca (saiu)") : dname[t.direction] || t.direction}</span></td>
+          <td><div class="asset sm">${icon((t.symbol || "?").toUpperCase(), "crypto", isSpamSym(t.symbol))}<div><b>${esc(t.symbol || "")}</b><div class="nets-small">${esc(NET[t.network] || t.network)}</div></div></div></td>
           <td>${qty(Number(t.amount))}</td>
           <td class="hide-sm">${dualUsd(v)}</td>
           <td class="hide-sm">${esc(t.source)}</td>
@@ -820,7 +1113,7 @@ function renderCadastros() {
         <div class="grow"><b>${esc(w.label)}</b> <span class="muted small">${money(toCcy(v))}${last ? " · " + ago(last) : ""}</span>
           <div class="addr">${esc(w.address || "chave guardada no Supabase")}${w.kind === "evm" ? " · " + (w.networks || []).map((x) => NET[x] || x).join(", ") : ""}</div></div>
         <button class="btn small" data-act="sync" data-id="${w.id}">Atualizar</button>
-        ${w.kind === "binance" ? `<button class="btn small" data-act="hist" data-id="${w.id}">Importar histórico</button>` : ""}
+        ${w.kind === "binance" ? `<button class="btn small" data-act="hist" data-id="${w.id}">Importar histórico</button><button class="btn small" data-act="csv" data-id="${w.id}" title="Para operações antigas que a API da Binance não devolve">Importar extrato (CSV)</button>` : ""}
         <button class="btn small ghost" data-act="toggle" data-id="${w.id}">${w.active ? "Desativar" : "Ativar"}</button>
         <button class="btn small ghost danger" data-act="del" data-id="${w.id}">Excluir</button>
       </div>`;
@@ -932,12 +1225,144 @@ async function runSync(walletId) {
   }
 }
 
+// ------------------------------------------------------------------ extrato CSV da Binance
+// Binance → Carteira → Histórico de transações → Gerar todos os extratos (máx. 12 meses por arquivo)
+// Colunas: User_ID, UTC_Time, Account, Operation, Coin, Change, Remark
+function parseCSV(text) {
+  const rows = [];
+  let row = [], cur = "", q = false;
+  text = text.replace(/^\uFEFF/, "");
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (q) {
+      if (c === '"' && text[i + 1] === '"') { cur += '"'; i++; }
+      else if (c === '"') q = false;
+      else cur += c;
+    } else if (c === '"') q = true;
+    else if (c === "," || c === ";") { row.push(cur); cur = ""; }
+    else if (c === "\n" || c === "\r") {
+      if (c === "\r" && text[i + 1] === "\n") i++;
+      row.push(cur); cur = "";
+      if (row.some((x) => x.trim() !== "")) rows.push(row);
+      row = [];
+    } else cur += c;
+  }
+  row.push(cur);
+  if (row.some((x) => x.trim() !== "")) rows.push(row);
+  return rows;
+}
+function csvDate(s) {
+  s = s.trim();
+  let m;
+  if ((m = s.match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})(?::(\d{2}))?/))) return Date.UTC(+m[1], m[2] - 1, +m[3], +m[4], +m[5], +(m[6] || 0));
+  if ((m = s.match(/^(\d{2})-(\d{2})-(\d{2}) (\d{2}):(\d{2})(?::(\d{2}))?/))) return Date.UTC(2000 + +m[1], m[2] - 1, +m[3], +m[4], +m[5], +(m[6] || 0));
+  if ((m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4}) (\d{1,2}):(\d{2})(?::(\d{2}))?/))) return Date.UTC(+m[3], m[2] - 1, +m[1], +m[4], +m[5], +(m[6] || 0));
+  const t = Date.parse(s + "Z");
+  return isNaN(t) ? null : t;
+}
+const FIATS = new Set(["BRL", "USD", "EUR"]);
+const isCash = (c) => STABLE.has(c) || FIATS.has(c);
+async function importBinanceCSV(files) {
+  const rep = $("#sync-report");
+  rep.classList.remove("hidden");
+  rep.innerHTML = '<span class="muted">Lendo o extrato…</span>';
+  rep.scrollIntoView({ behavior: "smooth", block: "center" });
+  const all = [];
+  for (const f of files) {
+    const rows = parseCSV(await f.text());
+    const head = rows.shift().map((h) => h.trim().toLowerCase());
+    const ix = (n) => head.indexOf(n);
+    const iT = ix("utc_time"), iA = ix("account"), iO = ix("operation"), iC = ix("coin"), iV = ix("change");
+    if (iT < 0 || iO < 0 || iC < 0 || iV < 0) {
+      rep.innerHTML = `<div class="err">O arquivo ${esc(f.name)} não parece ser o "Histórico de transações" da Binance (faltam as colunas UTC_Time, Operation, Coin e Change).</div>`;
+      return;
+    }
+    for (const r of rows) {
+      const ts = csvDate(r[iT] || "");
+      const v = Number(String(r[iV] || "").replace(/[^\d.eE+-]/g, ""));
+      if (!ts || !isFinite(v) || !v) continue;
+      all.push({ ts, acc: (r[iA] || "").trim(), op: (r[iO] || "").trim(), coin: (r[iC] || "").trim().toUpperCase(), v });
+    }
+  }
+  const SKIP = /transfer|subscription|redemption|savings purchase|savings principal|staking purchase|staking redemption|main account|funding account|isolated|margin loan|repay|collateral/i;
+  const INCOME = /interest|distribution|reward|airdrop|staking rewards|launchpool|mining|cashback|commission|bonus|dividend/i;
+  const MOVE_IN = /^deposit$|crypto deposit|fiat deposit|p2p.*(buy|receive)/i;
+  const MOVE_OUT = /^withdraw|crypto withdraw|fiat withdraw/i;
+  const FEE = /fee/i;
+  // agrupa por segundo + conta (uma operação gera várias linhas)
+  const groups = new Map(), moves = [], income = new Map();
+  for (const r of all) {
+    if (MOVE_IN.test(r.op) || MOVE_OUT.test(r.op)) { moves.push(r); continue; }
+    if (SKIP.test(r.op)) continue;
+    if (INCOME.test(r.op) && r.v > 0) {
+      const k = `${r.coin}|${new Date(r.ts).toISOString().slice(0, 7)}`;
+      income.set(k, (income.get(k) || 0) + r.v);
+      continue;
+    }
+    const k = `${Math.floor(r.ts / 1000)}|${r.acc}`;
+    (groups.get(k) || groups.set(k, []).get(k)).push(r);
+  }
+  // trades que já vieram pela API (para não contar duas vezes)
+  const { data: api } = await sb.from("binance_trades").select("id,ts,base,quote").neq("kind", "csv");
+  const apiKeys = (api || []).map((t) => ({ t: new Date(t.ts).getTime(), pair: [t.base, t.quote].sort().join("/") }));
+  const dupe = (ts, a, b) => { const pair = [a, b].sort().join("/"); return apiKeys.some((x) => x.pair === pair && Math.abs(x.t - ts) < 90_000); };
+  const trades = [];
+  let skipped = 0, odd = 0;
+  for (const [, rs] of groups) {
+    const net = new Map(), fee = new Map();
+    for (const r of rs) {
+      const m = FEE.test(r.op) ? fee : net;
+      m.set(r.coin, (m.get(r.coin) || 0) + r.v);
+    }
+    const pos = [...net].filter(([, v]) => v > 0), neg = [...net].filter(([, v]) => v < 0);
+    if (pos.length !== 1 || neg.length !== 1) { if (pos.length || neg.length) odd++; continue; }
+    const [rc, rv] = pos[0], [sc, sv] = neg[0];
+    const ts = rs[0].ts;
+    if (dupe(ts, rc, sc)) { skipped++; continue; }
+    const sell = isCash(rc) && !isCash(sc);
+    const t = sell
+      ? { base: sc, quote: rc, base_qty: -sv, quote_qty: rv, is_buy: false }
+      : { base: rc, quote: sc, base_qty: rv, quote_qty: -sv, is_buy: true };
+    const [fc, fv] = [...fee][0] || [null, 0];
+    trades.push({ user_id: S.user.id, kind: "csv", ts: new Date(ts).toISOString(), ...t, fee: fc ? Math.abs(fv) : null, fee_asset: fc,
+      id: `csv:${ts}:${t.base}:${t.quote}:${t.base_qty}` });
+  }
+  // depósitos, saques e rendimentos viram movimentações
+  const txs = [];
+  for (const r of moves) {
+    const dir = MOVE_IN.test(r.op) ? "in" : "out";
+    txs.push({ user_id: S.user.id, source: "Binance", wallet_id: S.wallets.find((w) => w.kind === "binance")?.id ?? null, network: "binance",
+      tx_hash: `csv-${dir}-${r.ts}-${r.coin}-${Math.abs(r.v)}`, ts: new Date(r.ts).toISOString(), direction: dir, symbol: r.coin, amount: Math.abs(r.v),
+      counterparty: `extrato Binance: ${r.op}` });
+  }
+  for (const [k, v] of income) {
+    const [coin, ym] = k.split("|");
+    txs.push({ user_id: S.user.id, source: "Binance", wallet_id: S.wallets.find((w) => w.kind === "binance")?.id ?? null, network: "binance",
+      tx_hash: `csv-rend-${coin}-${ym}`, ts: new Date(ym + "-28T12:00:00Z").toISOString(), direction: "in", symbol: coin, amount: v,
+      counterparty: `rendimentos de ${ym.split("-").reverse().join("/")} (Earn, staking, airdrops)` });
+  }
+  rep.innerHTML = `<span class="muted">Gravando ${trades.length} operações e ${txs.length} movimentações…</span>`;
+  for (let i = 0; i < trades.length; i += 500) {
+    const { error } = await sb.from("binance_trades").upsert(trades.slice(i, i + 500), { onConflict: "user_id,id", ignoreDuplicates: true });
+    if (error) { rep.innerHTML = `<div class="err">Erro ao gravar: ${esc(error.message)}</div>`; return; }
+  }
+  for (let i = 0; i < txs.length; i += 500) {
+    const { error } = await sb.from("transactions").upsert(txs.slice(i, i + 500), { onConflict: "user_id,network,tx_hash,symbol,direction", ignoreDuplicates: true });
+    if (error) { rep.innerHTML = `<div class="err">Erro ao gravar: ${esc(error.message)}</div>`; return; }
+  }
+  const first = all.length ? new Date(Math.min(...all.map((r) => r.ts))).toLocaleDateString("pt-BR") : "—";
+  const last = all.length ? new Date(Math.max(...all.map((r) => r.ts))).toLocaleDateString("pt-BR") : "—";
+  rep.innerHTML = `<div>✓ <b>Extrato lido</b> (${first} a ${last}): ${trades.length} compra(s)/venda(s), ${moves.length} depósito(s)/saque(s) e ${income.size} mês(es) de rendimentos.${skipped ? ` ${skipped} operação(ões) já tinham vindo pela API e foram ignoradas.` : ""}${odd ? ` ${odd} lançamento(s) com mais de duas moedas ficaram de fora (ex.: conversão de "poeira" em BNB).` : ""}</div><div class="muted">Recalculando o preço médio…</div>`;
+  await runHist(null, true);
+}
+
 // histórico da Binance (compras, vendas, convert, compras com reais) → preço médio
-async function runHist(btn) {
+async function runHist(btn, keep) {
   const rep = $("#sync-report");
   btn && (btn.disabled = true);
   rep.classList.remove("hidden");
-  rep.innerHTML = '<span class="muted">Importando o histórico da Binance… a primeira vez pode levar uns 2 minutos.</span>';
+  const before = keep ? rep.innerHTML.replace(/<div class="muted">Recalculando[^<]*<\/div>/, "") : "";
+  rep.innerHTML = before + '<span class="muted">Importando o histórico da Binance… a primeira vez pode levar uns 2 minutos.</span>';
   rep.scrollIntoView({ behavior: "smooth", block: "center" });
   try {
     const { data, error } = await sb.functions.invoke("historico", { body: {}, region: REGION });
@@ -946,7 +1371,7 @@ async function runHist(btn) {
       try { msg = (await error.context.json()).erro || msg; } catch { /* */ }
       throw new Error(msg);
     }
-    rep.innerHTML = `<div>✓ <b>Histórico da Binance</b>: ${data.operacoes} operação(ões) no total (novas agora: ${data.spot.novas} spot, ${data.convert.novas} convert, ${data.compras_com_reais.novas} compras/vendas com reais). Preço médio calculado para ${data.ativos_com_preco_medio} ativo(s).</div>` +
+    rep.innerHTML = before + `<div>✓ <b>Histórico da Binance</b>: ${data.operacoes} operação(ões) no total (novas agora: ${data.spot.novas} spot, ${data.convert.novas} convert, ${data.compras_com_reais.novas} compras/vendas com reais). Preço médio calculado para ${data.ativos_com_preco_medio} ativo(s).</div>` +
       (data.completo ? `<div class="muted">Histórico lido desde ${new Date(data.historico_ate + "T12:00").toLocaleDateString("pt-BR")}.</div>` : `<div class="err">Ainda falta uma parte (lido até ${new Date(data.historico_ate + "T12:00").toLocaleDateString("pt-BR")}). Clique em "Importar histórico" de novo para continuar de onde parou.</div>`);
     await loadAll();
   } catch (e) {
@@ -998,7 +1423,10 @@ function openManual(id, tab) {
   const isB3 = a.kind === "b3";
   const tv = a.tv_symbol || `BMFBOVESPA:${a.symbol.toUpperCase()}`;
   const ops = opsOf(id);
-  $("#d-title").textContent = `${a.symbol}${a.name ? " · " + a.name : ""}`;
+  S.detail = { kind: isB3 ? "b3" : "rf", sym: a.symbol, id };
+  $("#d-title").innerHTML = `${icon(a.symbol, isB3 ? "b3" : "rf")}<span>${esc(a.symbol)}</span>${a.name ? `<span class="muted d-name">${esc(a.name)}</span>` : ""}`;
+  $("#d-info").innerHTML = "";
+  $("#d-tabs").querySelector('[data-t="info"]').classList.toggle("hidden", !isB3);
   $("#d-flag").innerHTML = "";
   $("#d-form").classList.add("hidden");
   $("#d-tabs").classList.remove("hidden");
@@ -1016,10 +1444,7 @@ function openManual(id, tab) {
   $("#d-where").innerHTML = `<p class="muted">${esc(a.notes || "")}</p>${isB3 ? `<a class="btn ghost" href="https://br.tradingview.com/chart/?symbol=${encodeURIComponent(tv)}" target="_blank" rel="noopener">Abrir no TradingView ↗</a>` : ""}`;
   renderManualOps(a, ops);
   if (isB3) {
-    tvWidget($("#d-chart"), "advanced-chart", {
-      autosize: true, symbol: tv, interval: "D", timezone: "America/Sao_Paulo", theme: "dark", style: "1",
-      locale: "br", allow_symbol_change: true, hide_side_toolbar: false, calendar: false, support_host: "https://www.tradingview.com",
-    });
+    advChart(tv, "D");
   } else $("#d-chart").innerHTML = "";
   $("#d-evo").dataset.asset = id;
   $("#d-evo").dataset.loaded = "";
@@ -1097,8 +1522,7 @@ async function renderEvolution() {
     }
     evoChart?.remove();
     evoChart = LightweightCharts.createChart($("#evo-chart"), {
-      layout: { background: { color: "transparent" }, textColor: "#8a9ab0", fontFamily: "Inter" },
-      grid: { vertLines: { visible: false }, horzLines: { color: "#1c2632" } },
+      ...chartOpts(),
       rightPriceScale: { borderVisible: false }, timeScale: { borderVisible: false },
       localization: { locale: "pt-BR", priceFormatter: (v) => money(v, "BRL") }, autoSize: true,
     });
@@ -1141,6 +1565,13 @@ function bind() {
       document.querySelectorAll("#range button").forEach((x) => x.classList.toggle("active", x === b));
       renderChart();
     }));
+  setTheme(theme());
+  $("#theme").addEventListener("click", () => setTheme(theme() === "light" ? "dark" : "light"));
+  $("#d-info").addEventListener("click", (e) => {
+    const b = e.target.closest("[data-copy]");
+    if (!b) return;
+    navigator.clipboard?.writeText(b.dataset.copy).then(() => { b.textContent = "Copiado ✓"; setTimeout(() => (b.textContent = "Copiar"), 1500); });
+  });
   const applyEye = () => {
     document.body.classList.toggle("privacy", S.hide);
     $("#eye").innerHTML = S.hide ? EYE_OFF : EYE_ON;
@@ -1311,6 +1742,7 @@ function bind() {
     const w = S.wallets.find((x) => x.id === b.dataset.id);
     if (b.dataset.act === "sync") return runSync(w.id);
     if (b.dataset.act === "hist") return runHist(b);
+    if (b.dataset.act === "csv") return $("#csv-file").click();
     if (b.dataset.act === "toggle") {
       await sb.from("wallets").update({ active: !w.active }).eq("id", w.id);
       w.active = !w.active;
@@ -1325,6 +1757,11 @@ function bind() {
   });
 
   $("#m-kind").addEventListener("change", manualFormLabels);
+  $("#csv-file").addEventListener("change", async (e) => {
+    const files = [...e.target.files];
+    e.target.value = "";
+    if (files.length) await importBinanceCSV(files).catch((err) => alertMsg(`Erro no extrato: ${err.message}`));
+  });
   $("#manual-form").addEventListener("submit", async (e) => {
     e.preventDefault();
     const num = (id) => ($(id).value === "" ? null : Number($(id).value));

@@ -246,47 +246,60 @@ export async function evm(address: string, networks: string[]): Promise<Result> 
     } while (pageKey);
   }
 
-  // Movimentações (últimas 25 de entrada e de saída por rede)
-  const priced = new Set(holdings.filter((h) => h.price_usd).map((h) => (h.contract || "").toLowerCase()));
-  const txs: Tx[] = [];
+  // Movimentações: histórico completo (todas as páginas) de entrada e saída por rede
+  const SPAMSYM = /[\s#$:/]|\.(io|com|org|net|app|xyz|site|finance|vip|club|top|live|gift|info|cc|me|fi|pro|ai)$/i;
+  const agg = new Map<string, Tx>();
   await pool(nets, 3, async (net) => {
     for (const dir of ["out", "in"] as const) {
-      const params: any = {
-        fromBlock: "0x0",
-        toBlock: "latest",
-        category: net === "eth-mainnet" || net === "matic-mainnet" ? ["external", "internal", "erc20"] : ["external", "erc20"],
-        withMetadata: true,
-        excludeZeroValue: true,
-        maxCount: "0x19",
-        order: "desc",
-      };
-      params[dir === "out" ? "fromAddress" : "toAddress"] = address;
-      try {
-        const r = await fetchJson(`https://${net}.g.alchemy.com/v2/${key}`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ id: 1, jsonrpc: "2.0", method: "alchemy_getAssetTransfers", params: [params] }),
-        });
+      let pageKey: string | undefined;
+      let pages = 0;
+      do {
+        const params: any = {
+          fromBlock: "0x0",
+          toBlock: "latest",
+          category: net === "eth-mainnet" || net === "matic-mainnet" ? ["external", "internal", "erc20"] : ["external", "erc20"],
+          withMetadata: true,
+          excludeZeroValue: true,
+          maxCount: "0x3e8",
+          order: "desc",
+        };
+        if (pageKey) params.pageKey = pageKey;
+        params[dir === "out" ? "fromAddress" : "toAddress"] = address;
+        let r: any;
+        try {
+          r = await fetchJson(`https://${net}.g.alchemy.com/v2/${key}`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ id: 1, jsonrpc: "2.0", method: "alchemy_getAssetTransfers", params: [params] }),
+          });
+        } catch (_e) {
+          break; // rede sem suporte a histórico
+        }
         for (const t of r.result?.transfers ?? []) {
-          const contract = (t.rawContract?.address || "").toLowerCase();
-          // ignora tokens recebidos sem preço (quase sempre airdrop de spam)
-          if (dir === "in" && t.category === "erc20" && !priced.has(contract)) continue;
-          txs.push({
+          if (!t.asset || SPAMSYM.test(t.asset)) continue; // tokens com site no nome = golpe
+          const k = `${net}|${t.hash}|${t.asset}|${dir}`;
+          const prev = agg.get(k);
+          if (prev) {
+            prev.amount = (prev.amount || 0) + (t.value || 0);
+            continue;
+          }
+          agg.set(k, {
             network: net,
             tx_hash: t.hash,
             ts: t.metadata?.blockTimestamp ?? null,
             direction: dir,
-            symbol: t.asset ?? null,
+            symbol: t.asset,
             amount: t.value ?? null,
             counterparty: dir === "out" ? t.to : t.from,
             url: (EVM_NETWORKS[net]?.explorer ?? "") + t.hash,
           });
         }
-      } catch (_e) {
-        // rede sem suporte a histórico: segue sem movimentações
-      }
+        pageKey = r.result?.pageKey;
+        pages++;
+      } while (pageKey && pages < 10);
     }
   });
+  const txs = [...agg.values()];
   return { holdings, txs };
 }
 

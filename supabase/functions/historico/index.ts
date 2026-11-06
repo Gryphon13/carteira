@@ -111,7 +111,7 @@ async function run(userId: string) {
   const tick = await fetchJson(`${BINANCE}/api/v3/ticker/price`);
   const exists = new Set((tick as any[]).map((t) => t.symbol));
   const { data: hold } = await admin.from("holdings").select("symbol").eq("user_id", userId);
-  const { data: past } = await admin.from("binance_trades").select("base").eq("user_id", userId);
+  const { data: past } = await admin.from("binance_trades").select("base").eq("user_id", userId).neq("kind", "csv").limit(5000);
   const assets = new Set([...(hold ?? []).map((h) => h.symbol), ...(past ?? []).map((p) => p.base)]);
   const pairs: { sym: string; base: string; quote: string }[] = [];
   for (const a of assets) for (const q of QUOTES) if (a !== q && exists.has(a + q)) pairs.push({ sym: a + q, base: a, quote: q });
@@ -181,7 +181,12 @@ async function run(userId: string) {
   rep.historico_ate = new Date(Math.max(oldest, START)).toISOString().slice(0, 10);
 
   // ---------- 3) Preço médio (custo médio ponderado) e movimentações
-  const { data: trades } = await admin.from("binance_trades").select("*").eq("user_id", userId).order("ts");
+  const trades: any[] = [];
+  for (let from = 0; ; from += 1000) {
+    const { data } = await admin.from("binance_trades").select("*").eq("user_id", userId).order("ts").order("id").range(from, from + 999);
+    trades.push(...(data ?? []));
+    if (!data || data.length < 1000) break;
+  }
   type Pos = { qty: number; usd: number; brl: number; n: number; first: string | null; last: string | null };
   const pos = new Map<string, Pos>();
   const P = (a: string) => pos.get(a) || (pos.set(a, { qty: 0, usd: 0, brl: 0, n: 0, first: null, last: null }), pos.get(a)!);
@@ -223,7 +228,7 @@ async function run(userId: string) {
     txRows.push({
       user_id: userId, wallet_id: null, source: "Binance", network: "binance", tx_hash: t.id, ts: t.ts,
       direction: t.is_buy ? "buy" : "sell", symbol: t.base, amount: bq, quote_asset: t.quote, quote_amount: qq,
-      counterparty: t.kind === "convert" ? `Convert ${t.quote} → ${t.base}` : t.kind === "fiat" ? `${t.is_buy ? "Compra" : "Venda"} com ${t.quote}` : `Spot ${t.base}/${t.quote}`,
+      counterparty: t.kind === "convert" ? `Convert ${t.quote} → ${t.base}` : t.kind === "fiat" ? `${t.is_buy ? "Compra" : "Venda"} com ${t.quote}` : t.kind === "csv" ? `Extrato ${t.base}/${t.quote}` : `Spot ${t.base}/${t.quote}`,
       url: null,
     });
   }

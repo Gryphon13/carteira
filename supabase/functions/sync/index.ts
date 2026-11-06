@@ -104,12 +104,12 @@ async function syncUser(userId: string, onlyWallet?: string) {
       if (e1) throw e1;
     }
     const txs = (r.txs as any[]).map((t) => ({ ...t, user_id: userId, wallet_id: w.id, source: w.label }));
-    if (txs.length) {
-      const { error: e2 } = await admin.from("transactions").upsert(txs, {
+    for (let i = 0; i < txs.length; i += 500) {
+      const { error: e2 } = await admin.from("transactions").upsert(txs.slice(i, i + 500), {
         onConflict: "user_id,network,tx_hash,symbol,direction",
-        ignoreDuplicates: true,
+        ignoreDuplicates: false,
       });
-      if (e2) report.push({ carteira: w.label, aviso: `movimentações: ${e2.message}` });
+      if (e2) { report.push({ carteira: w.label, aviso: `movimentações: ${e2.message}` }); break; }
     }
     report.push({ carteira: w.label, ok: true, ativos: rows.length, movimentacoes: txs.length, ms });
   }

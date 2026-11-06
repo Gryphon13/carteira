@@ -4,11 +4,16 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <meta name="robots" content="noindex" />
+  <meta name="theme-color" content="#0b0b0d" />
+  <script>
+    try { document.documentElement.dataset.theme = localStorage.getItem("carteira.theme") || (matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark"); }
+    catch (e) { document.documentElement.dataset.theme = "dark"; }
+  </script>
   <title>Carteira</title>
-  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%2310b981'/><path d='M8 21l5-6 4 3 7-8' stroke='white' stroke-width='3' fill='none' stroke-linecap='round' stroke-linejoin='round'/></svg>" />
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%23f5a524'/><path d='M8 21l5-6 4 3 7-8' stroke='white' stroke-width='3' fill='none' stroke-linecap='round' stroke-linejoin='round'/></svg>" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="style.css?v=11" />
+  <link rel="stylesheet" href="style.css?v=12" />
 </head>
 <body>
   <!-- Login -->
@@ -40,6 +45,7 @@
           <div><span class="muted">Dólar comercial</span> <b id="fx-com">—</b></div>
           <div><span class="muted">USDT/BRL ao vivo</span> <b id="fx-usdt">—</b></div>
         </div>
+        <button id="theme" class="btn ghost small icon" type="button" title="Tema claro"></button>
         <button id="eye" class="btn ghost small icon" type="button" title="Ocultar valores"></button>
         <div class="seg" id="ccy">
           <button data-ccy="BRL" class="active">R$</button>
@@ -155,6 +161,8 @@
       <section class="card">
         <div class="card-head"><h2>Carteiras e corretoras</h2></div>
         <div id="wallet-list" class="list"></div>
+        <input type="file" id="csv-file" accept=".csv,text/csv" multiple hidden />
+        <p class="hint">Operações antigas da Binance: a API da Binance não devolve mais trades de alguns anos atrás. Para recuperá-las, na Binance vá em <b>Carteira → Histórico de transações → Exportar / Gerar todos os extratos</b> (cada arquivo cobre até 12 meses), descompacte e use <b>Importar extrato (CSV)</b>. Pode escolher vários arquivos de uma vez; importar de novo não duplica.</p>
         <form id="wallet-form" class="form">
           <h3>Adicionar carteira</h3>
           <div class="row">
@@ -231,10 +239,11 @@
       </div>
       <div class="d-stats" id="d-stats"></div>
       <div id="d-flag"></div>
-      <div class="seg" id="d-tabs"><button data-t="chart" class="active">Gráfico</button><button data-t="evo" class="hidden">Evolução da posição</button><button data-t="movs">Movimentações</button></div>
+      <div class="seg" id="d-tabs"><button data-t="chart" class="active">Gráfico</button><button data-t="evo" class="hidden">Evolução da posição</button><button data-t="movs">Movimentações</button><button data-t="info">Informações</button></div>
       <div id="d-chart" class="tv-chart"></div>
       <div id="d-movs" class="hidden"></div>
       <div id="d-evo" class="hidden"></div>
+      <div id="d-info" class="hidden"></div>
       <div class="d-cols">
         <div>
           <h3>Onde está</h3>
@@ -259,6 +268,6 @@
   </div>
 
   <script src="https://unpkg.com/lightweight-charts@4.2.3/dist/lightweight-charts.standalone.production.js"></script>
-  <script type="module" src="app.js?v=10"></script>
+  <script type="module" src="app.js?v=11"></script>
 </body>
 </html>
