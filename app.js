@@ -805,9 +805,15 @@ async function computeHistory() {
     const valid = (x) => /^[A-Z0-9]{2,10}$/.test(x) && !isSpamSym(x) && !S.settings[x]?.hidden;
     const okSyms = new Set(S.holdings.filter((h) => !holdingFlag(h)).map((h) => h.symbol));
     const flaggedSyms = new Set(S.holdings.filter((h) => holdingFlag(h) && !okSyms.has(h.symbol)).map((h) => h.symbol));
-    // saldo de hoje por ativo
+    // saldo de hoje por "gaveta" (carteira + rede + ativo; a Binance conta como uma gaveta só)
+    const bucket = (net, wid, sym) => (String(net).startsWith("binance") ? `binance||${sym}` : `${wid}|${net}|${sym}`);
+    const symOf = (k) => k.slice(k.lastIndexOf("|") + 1);
     const bal = new Map();
-    for (const r of cryptoRows()) if (valid(r.sym)) bal.set(r.sym, r.amount);
+    for (const h of S.holdings) {
+      if (holdingFlag(h) || !valid(h.symbol)) continue;
+      const k = bucket(h.network, h.wallet_id, h.symbol);
+      bal.set(k, (bal.get(k) || 0) + Number(h.amount));
+    }
     // movimentações (sem duplicar depósitos/saques da Binance que vieram pela API e pelo extrato)
     const seen = new Set(), list = [];
     for (const t of S.txs) {
@@ -820,6 +826,14 @@ async function computeHistory() {
       }
       list.push({ ...t, sym, q: (t.quote_asset || "").toUpperCase(), ms: new Date(t.ts).getTime() });
     }
+    // antes da primeira movimentação registrada de uma gaveta, ela estava vazia
+    // (evita contar em dobro moeda que chegou por ponte/contrato sem registro de entrada)
+    const firstOf = new Map();
+    const touch = (k, ms) => firstOf.set(k, Math.min(firstOf.get(k) ?? Infinity, ms));
+    for (const t of list) {
+      touch(bucket(t.network, t.wallet_id, t.sym), t.ms);
+      if (t.q) touch(bucket(t.network, t.wallet_id, t.q), t.ms);
+    }
     const opsB3 = S.ops.filter((o) => o.op_date);
     const firstMs = Math.min(...list.map((t) => t.ms), ...opsB3.map((o) => new Date(o.op_date + "T12:00:00Z").getTime()), Date.now());
     const first = Math.floor(firstMs / DAY) * DAY;
@@ -827,7 +841,7 @@ async function computeHistory() {
     if (today - first < 3 * DAY) return;
     note.classList.remove("hidden");
     note.textContent = "Reconstruindo a evolução com as cotações de cada dia…";
-    const syms = new Set([...bal.keys(), ...list.map((t) => t.sym), ...list.map((t) => t.q).filter((q) => q && valid(q))]);
+    const syms = new Set([...[...bal.keys()].map(symOf), ...list.map((t) => t.sym), ...list.map((t) => t.q).filter((q) => q && valid(q))]);
     const K = {};
     const usdt = await dailyCloses("USDTBRL", first);
     const toFetch = [...syms].filter((x) => !STABLE.has(x) && x !== "BRL");
@@ -846,7 +860,7 @@ async function computeHistory() {
     });
     // percorre do presente para o passado
     list.sort((a, b) => b.ms - a.ms);
-    const add = (x, v) => syms.has(x) && bal.set(x, (bal.get(x) || 0) + v);
+    const add = (t, x, v) => { if (!syms.has(x)) return; const k = bucket(t.network, t.wallet_id, x); bal.set(k, (bal.get(k) || 0) + v); };
     let idx = 0;
     const pts = [];
     const lastB3 = {};
@@ -872,15 +886,16 @@ async function computeHistory() {
       while (idx < list.length && list[idx].ms >= d + DAY) {
         const t = list[idx++];
         const a = Number(t.amount) || 0, qa = Number(t.quote_amount) || 0;
-        if (t.direction === "in") add(t.sym, -a);
-        else if (t.direction === "out") add(t.sym, a);
-        else if (t.direction === "buy") { add(t.sym, -a); if (t.q) add(t.q, qa); }
-        else if (t.direction === "sell") { add(t.sym, a); if (t.q) add(t.q, -qa); }
+        if (t.direction === "in") add(t, t.sym, -a);
+        else if (t.direction === "out") add(t, t.sym, a);
+        else if (t.direction === "buy") { add(t, t.sym, -a); if (t.q) add(t, t.q, qa); }
+        else if (t.direction === "sell") { add(t, t.sym, a); if (t.q) add(t, t.q, -qa); }
       }
       let usd = 0;
-      for (const [x, q] of bal) {
+      for (const [k, q] of bal) {
         if (!(q > 0)) continue;
-        const p = pxUsd(x, d);
+        if (firstOf.has(k) && d + DAY <= firstOf.get(k)) continue;
+        const p = pxUsd(symOf(k), d);
         if (p) usd += q * p;
       }
       const fx = closeAt(usdt, d) || rate();
@@ -899,6 +914,7 @@ async function computeHistory() {
     S.hist = pts;
     const nowVal = Object.fromEntries(cryptoRows().map((r) => [r.sym, r.value || 0]));
     const semPreco = toFetch.filter((x) => !K[x] && nowVal[x] > 1);
+    if (window.__S) window.__hist = { bal, firstOf, K };
     const binMoves = list.some((t) => t.network === "binance" && (t.direction === "in" || t.direction === "out") && t.ms < Date.now() - 100 * DAY);
     note.textContent = `Reconstruído desde ${new Date(pts[0].time * 1000).toLocaleDateString("pt-BR")} com ${list.length} movimentações e o fechamento de cada dia (Binance para cripto, Yahoo para a B3).`
       + (semPreco.length ? ` Sem cotação histórica na Binance (ficam fora do passado): ${semPreco.join(", ")}.` : "")
