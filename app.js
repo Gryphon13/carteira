@@ -394,7 +394,7 @@ function renderPainel() {
   // tabela cripto
   const rows = sortRows(filteredCrypto(), (r, k) => ({ sym: r.sym, price: r.price, ch: r.ch, amount: r.amount, value: r.value, pnl: r.pnlUsd })[k]);
   const totalC = cryptoRows().filter((r) => !r.hidden).reduce((s, r) => s + (r.value || 0), 0);
-  const head = `<tr>${th("sym", "Ativo")}${th("price", "Preço")}${th("ch", "24h")}${th("amount", "Quantidade", "hide-sm")}${th("value", "Valor")}<th class="hide-sm">% cart.</th>${th("pnl", "Resultado", "hide-sm")}</tr>`;
+  const head = `<tr>${th("sym", "Ativo")}${th("price", "Preço")}<th class="hide-sm">Preço médio</th>${th("ch", "24h")}${th("amount", "Quantidade", "hide-sm")}${th("value", "Valor")}<th class="hide-sm">% cart.</th>${th("pnl", "Resultado", "hide-sm")}</tr>`;
   const body = rows
     .map((r) => {
       const nets = [...new Set(r.parts.map((p) => `${p.source} · ${NET[p.network] || p.network}`))].join(", ");
@@ -404,6 +404,7 @@ function renderPainel() {
       return `<tr class="click ${r.hidden ? "dim" : ""}" data-sym="${esc(r.sym)}">
         <td><div class="asset">${icon(r.sym)}<div><div class="sym">${esc(r.sym)}${r.flag ? ` <span class="badge warn">${r.flag}</span>` : ""}</div><div class="nets-small">${esc(nets)}</div></div></div></td>
         <td><span class="price ${flash}">${dualUsd(r.price, price)}</span></td>
+        <td class="hide-sm">${r.costUsd && r.amount ? `<span class="price">${dualUsd(r.costUsd / r.amount, price)}</span>` : '<span class="muted small">—</span>'}</td>
         <td><span class="pct ${cls(r.ch)}">${pct(r.ch)}</span></td>
         <td class="hide-sm">${qty(r.amount)}</td>
         <td>${dualUsd(r.value)}</td>
@@ -421,7 +422,7 @@ function renderPainel() {
     ? `🛡️ ${nSus.length ? `<b>${nSus.length} token(s) suspeito(s)</b> (${esc(nSus.map((h) => h.symbol).join(", "))}) e ` : ""}${flagged.length - nSus.length} token(s) de spam estão fora do total. ${S.filters.spam ? "" : '<a href="#" id="show-flagged">Mostrar para revisar</a>'}`
     : "";
   $("#spam-note").classList.toggle("hidden", !flagged.length);
-  $("#crypto-table").innerHTML = head + (body || `<tr><td colspan="7" class="empty">${emptyMsg}</td></tr>`);
+  $("#crypto-table").innerHTML = head + (body || `<tr><td colspan="8" class="empty">${emptyMsg}</td></tr>`);
 
   // tabela manual
   const mr = sortRows(filteredManual(), (a, k) => ({ sym: a.symbol, price: a.px, ch: a.ch, amount: Number(a.quantity), value: a.valueBrl, pnl: a.pnlBrl })[k]);
@@ -550,6 +551,7 @@ function assetMovs(sym) {
   }
   return out;
 }
+const shortAddr = (t) => (t || "").replace(/0x[0-9a-fA-F]{20,}|[13][a-km-zA-HJ-NP-Z1-9]{30,}|bc1[0-9a-z]{30,}|addr1[0-9a-z]{40,}/g, (m) => m.slice(0, 8) + "…" + m.slice(-6));
 function unitFmt(v, asset) {
   if (v == null || !isFinite(v)) return "—";
   if (STABLE.has(asset)) return price(v, "USD");
@@ -577,7 +579,7 @@ function renderAssetMovs(sym) {
         <td>${qty(x.amount)}</td>
         <td>${x.unitAsset ? unitFmt(x.unit, x.unitAsset) : "—"}</td>
         <td class="hide-sm">${x.total != null && x.unitAsset ? (S.hide ? MASK : unitFmt(x.total, x.unitAsset)) : "—"}</td>
-        <td class="hide-sm"><span class="nets-small cp">${esc(x.t.source)} · ${esc(x.swapped ? x.desc : (x.t.counterparty || NET[x.t.network] || ""))}</span></td>
+        <td class="hide-sm det"><span class="nets-small cp" title="${esc(x.t.counterparty || "")}">${esc(x.t.source)} · ${esc(NET[x.t.network] || x.t.network)}${(x.swapped ? x.desc : x.t.counterparty) ? " · " + esc(shortAddr(x.swapped ? x.desc : x.t.counterparty)) : ""}</span></td>
         <td>${x.t.url ? `<a href="${esc(x.t.url)}" target="_blank" rel="noopener">ver ↗</a>` : ""}</td>
       </tr>`).join("") || '<tr><td colspan="7" class="empty">Nenhuma movimentação registrada para este ativo.</td></tr>'}
     </table></div>`;
@@ -704,6 +706,8 @@ function openAsset(sym, isB3 = false) {
       ["24h", `<span class="${cls(r?.ch)}">${pct(r?.ch) || "—"}</span>`],
       ["Quantidade", qty(r?.amount)],
       ["Valor", `${money(r?.value, "USD")}<div class="small muted">${money(r?.value != null && rate() ? r.value * rate() : null, "BRL")}</div>`],
+      ["Preço médio" + (r?.avgSrc === "binance" ? " (Binance)" : r?.avgSrc === "manual" ? " (manual)" : ""), r?.costUsd && r?.amount ? `${price(r.costUsd / r.amount, "USD")}<div class="sub2">${price(rate() ? (r.costUsd / r.amount) * rate() : null, "BRL")}</div>` : '<span class="muted small">não informado</span>'],
+      ["Resultado", r?.pnlUsd != null ? `<span class="${cls(r.pnlUsd)}">${money(r.pnlUsd, "USD")}</span><div class="sub2 ${cls(r.pnlUsd)}">${r.costUsd ? pct(r.pnlUsd / r.costUsd) : ""}</div>` : '<span class="muted small">—</span>'],
     ].map(([k, v]) => `<div class="stat"><div class="muted small">${k}</div><div class="v">${v}</div></div>`).join("");
     const cbx = S.cb[sym];
     const avgUsd = cbx && Number(cbx.qty) ? Number(cbx.cost_usd) / Number(cbx.qty) : null;
