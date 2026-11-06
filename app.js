@@ -675,7 +675,7 @@ function unitFmt(v, asset) {
 // preço em US$ de um ativo num dia (fechamento diário já baixado para o gráfico de evolução)
 function histUsd(asset, ms) {
   if (!asset) return null;
-  if (STABLE.has(asset)) return 1;
+  if (STABLE.has(asset) || asset === "USD") return 1;
   const day = Math.floor(ms / DAY) * DAY;
   if (asset === "BRL") { const r = closeAt(kLoad("USDTBRL"), day); return r ? 1 / r : null; }
   const k = kLoad(asset + "USDT");
@@ -723,7 +723,7 @@ function renderAssetMovs(sym) {
         <td>${x.t.ts ? new Date(x.t.ts).toLocaleString("pt-BR", { dateStyle: "short", timeStyle: "short" }) : "—"}</td>
         <td><span class="${x.dir === "buy" || x.dir === "in" ? "up" : x.dir === "sell" || x.dir === "out" ? "down" : ""}">${dname[x.dir] || x.dir}</span></td>
         <td>${qty(x.amount)}</td>
-        <td>${x.market ? '<span class="muted" title="fechamento do dia">≈ </span>' : ""}${dualAt(x.usdUnit, x.ms, price)}${x.unitAsset && !STABLE.has(x.unitAsset) && x.unitAsset !== "BRL" ? `<div class="nets-small">${unitFmt(x.unit, x.unitAsset)}</div>` : ""}</td>
+        <td>${x.market ? '<span class="muted" title="fechamento do dia">≈ </span>' : ""}${dualAt(x.usdUnit, x.ms, price)}${x.unitAsset && !STABLE.has(x.unitAsset) && x.unitAsset !== "BRL" && x.unitAsset !== "USD" ? `<div class="nets-small">${unitFmt(x.unit, x.unitAsset)}</div>` : ""}</td>
         <td class="hide-sm">${S.hide ? MASK : dualAt(x.usdTotal, x.ms, money)}</td>
         <td class="hide-sm det"><span class="nets-small cp" title="${esc(x.t.counterparty || "")}">${esc(x.t.source)} · ${esc(NET[x.t.network] || x.t.network)}${(x.swapped ? x.desc : x.t.counterparty) ? " · " + esc(shortAddr(x.swapped ? x.desc : x.t.counterparty)) : ""}</span></td>
         <td>${x.t.url ? `<a href="${esc(x.t.url)}" target="_blank" rel="noopener">ver ↗</a>` : ""}</td>
@@ -1913,13 +1913,13 @@ function classifyCryptoCom(cryptoRows, cashRows) {
   const num = (x) => Number(String(x ?? "").trim()) || 0;
   const ms = (x) => Date.parse(String(x).trim().replace(" ", "T") + "Z");
   const month = (t) => new Date(t).toISOString().slice(0, 7);
-  const txs = [], bal = new Map(), income = new Map(), lastTs = new Map();
+  const txs = [], bal = new Map(), income = new Map(), incomeUsd = new Map(), lastTs = new Map();
   const addBal = (c, v) => c && c !== "BRL" && bal.set(c, (bal.get(c) || 0) + v);
   const tx = ({ t, ...o }) => txs.push({ url: null, quote_asset: null, quote_amount: null, ...o, ts: new Date(t).toISOString() });
   const swapPend = new Map();
   let n = 0;
   for (const r of cryptoRows) {
-    const t = ms(r.ts), kind = r.kind, cur = r.cur, amt = num(r.amt), to = r.tocur, toAmt = num(r.toamt);
+    const t = ms(r.ts), kind = r.kind, cur = r.cur, amt = num(r.amt), to = r.tocur, toAmt = num(r.toamt), usd = Math.abs(num(r.nusd));
     if (!t || !kind) continue;
     if (LOCK.test(kind)) continue; // CRO travado continua sendo seu
     const id = `csv-cdc-${t}-${kind}-${cur}-${amt}-${n++}`;
@@ -1944,12 +1944,14 @@ function classifyCryptoCom(cryptoRows, cashRows) {
     } else if (INCOME.test(kind) && amt > 0) {
       const k = `${cur}|${month(t)}`;
       income.set(k, (income.get(k) || 0) + amt);
+      incomeUsd.set(k, (incomeUsd.get(k) || 0) + usd);
       lastTs.set(k, Math.max(lastTs.get(k) || 0, t));
       addBal(cur, amt);
     } else if (amt) {
       // depósito, saque, recarga do cartão, poeira convertida…
       const dir = amt > 0 ? "in" : "out";
-      tx({ tx_hash: id, t, direction: dir, symbol: cur, amount: Math.abs(amt), counterparty: `Crypto.com: ${r.desc}`, url: null });
+      // valor em US$ na data (vem no próprio extrato) para o preço médio
+      tx({ tx_hash: id, t, direction: dir, symbol: cur, amount: Math.abs(amt), quote_asset: usd ? "USD" : null, quote_amount: usd || null, counterparty: `Crypto.com: ${r.desc}`, url: null });
       addBal(cur, amt);
     }
   }
@@ -1959,7 +1961,7 @@ function classifyCryptoCom(cryptoRows, cashRows) {
   }
   for (const [k, v] of income) {
     const [cur, ym] = k.split("|");
-    tx({ tx_hash: `csv-cdc-rend-${cur}-${ym}`, t: lastTs.get(k), direction: "in", symbol: cur, amount: v, counterparty: `Crypto.com: recompensas e cashback de ${ym.split("-").reverse().join("/")}` });
+    tx({ tx_hash: `csv-cdc-rend-${cur}-${ym}`, t: lastTs.get(k), direction: "in", symbol: cur, amount: v, quote_asset: "USD", quote_amount: incomeUsd.get(k) || null, counterparty: `Crypto.com: recompensas e cashback de ${ym.split("-").reverse().join("/")}` });
   }
   // conta em reais: só depósitos, saques e recargas do cartão (compras e vendas já vieram pela carteira de cripto)
   let brl = 0;
@@ -1993,6 +1995,7 @@ async function importCryptoCom(files) {
       const list = rows.slice(hi + 1).filter((r) => r.some((c) => String(c).trim())).map((r) => ({
         ts: g(r, "timestamp_utc"), desc: g(r, "transaction_description"), cur: String(g(r, "currency")).toUpperCase(), amt: g(r, "amount"),
         tocur: String(g(r, "to_currency")).toUpperCase(), toamt: g(r, "to_amount"), kind: g(r, "transaction_kind"), hash: g(r, "transaction_hash"),
+        nusd: g(r, "native_amount_in_usd"),
       }));
       raw += list.length;
       const isCash = /cash|fiat/i.test(f.name) || (list.length && list.every((x) => x.cur === "BRL" || /^viban|crypto_viban$/.test(x.kind)));
@@ -2021,7 +2024,8 @@ async function importCryptoCom(files) {
   rep.innerHTML = `<div>✓ <b>Crypto.com importada</b>: ${raw} linhas${dup ? ` (${dup} repetidas entre arquivos foram descartadas)` : ""}, ${res.txs.length} movimentações. Saldo calculado: ${Object.entries(res.saldos).map(([k, v]) => `${qty(v)} ${k}`).join(", ") || "zerado"}.</div><div class="muted">Atualizando saldos…</div>`;
   await sb.functions.invoke("sync", { body: { wallet_id: w.id }, region: REGION }).catch(() => {});
   await loadAll();
-  rep.innerHTML = rep.innerHTML.replace(/<div class="muted">Atualizando saldos…<\/div>/, "");
+  rep.innerHTML = rep.innerHTML.replace(/<div class="muted">Atualizando saldos…<\/div>/, "<div class=\"muted\">Recalculando o preço médio…</div>");
+  await runHist(null, true);
 }
 
 async function importBinanceCSV(files) {

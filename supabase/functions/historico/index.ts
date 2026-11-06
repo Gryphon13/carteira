@@ -224,6 +224,14 @@ async function run(userId: string) {
     moves.push(...(data ?? []));
     if (!data || data.length < 1000) break;
   }
+  // Crypto.com (extrato do app): compras, vendas, recompensas e transferências, com o valor em US$ da data
+  const cdc: any[] = [];
+  for (let from = 0; ; from += 1000) {
+    const { data } = await admin.from("transactions").select("ts,direction,symbol,amount,quote_asset,quote_amount,tx_hash")
+      .eq("user_id", userId).eq("network", "cryptocom").order("ts").range(from, from + 999);
+    cdc.push(...(data ?? []));
+    if (!data || data.length < 1000) break;
+  }
   // "Asset Recovery" (sai o token antigo) + "Token Swap - Distribution" (entra o novo) em até 4 dias = troca de nome
   const used = new Set<any>();
   const renameEv: any[] = [];
@@ -234,16 +242,36 @@ async function run(userId: string) {
     used.add(o); used.add(i);
     renameEv.push({ ts: i.ts, from: o.symbol, fromQty: Number(o.amount), to: i.symbol, toQty: Number(i.amount) });
   }
-  type Ev = { ts: string; kind: "trade" | "move" | "rename"; x: any };
+  type Ev = { ts: string; kind: "trade" | "move" | "rename" | "cdc"; x: any };
   const events: Ev[] = [
     ...trades.map((t) => ({ ts: t.ts, kind: "trade" as const, x: t })),
     ...moves.filter((m) => !used.has(m) && !m.tx_hash.startsWith("csv-fut")).map((m) => ({ ts: m.ts, kind: "move" as const, x: m })),
     ...renameEv.map((r) => ({ ts: r.ts, kind: "rename" as const, x: r })),
+    ...cdc.map((m) => ({ ts: m.ts, kind: "cdc" as const, x: m })),
   ].sort((a, b) => new Date(a.ts).getTime() - new Date(b.ts).getTime());
   const txRows: any[] = [];
   for (const ev of events) {
     const ts = new Date(ev.ts).getTime();
     if (ev.kind === "rename") { rename(ev.x.from, ev.x.fromQty, ev.x.to, ev.x.toQty, ev.ts); continue; }
+    if (ev.kind === "cdc") {
+      const m = ev.x, a = Number(m.amount), q = m.quote_asset || null, qa = Number(m.quote_amount || 0);
+      const fx = await brlPerUsd(ts);
+      const usdOfQuote = async () => !q || !qa ? null : q === "USD" || STABLE.has(q) ? qa : q === "BRL" ? qa / fx : ((await usdAt(q, ts)) ?? 0) * qa || null;
+      if (m.direction === "buy") {
+        let usd = await usdOfQuote();
+        if (usd == null) { const px = await usdAt(m.symbol, ts); usd = px ? px * a : 0; }
+        add(m.symbol, a, usd, q === "BRL" ? qa : usd * fx, m.ts);
+        if (q && q !== "USD") sub(q, qa, m.ts);
+      } else if (m.direction === "sell") {
+        sub(m.symbol, a, m.ts);
+        if (q && q !== "USD" && q !== "BRL") { const u = await usdOfQuote(); add(q, qa, u || 0, (u || 0) * fx, m.ts); }
+      } else if (m.direction === "in") {
+        let usd = q === "USD" && qa ? qa : null;
+        if (usd == null) { const px = await usdAt(m.symbol, ts); if (px) usd = px * a; }
+        if (usd != null) add(m.symbol, a, usd, usd * fx, m.ts);
+      } else if (m.direction === "out") sub(m.symbol, a, m.ts);
+      continue;
+    }
     if (ev.kind === "move") {
       const m = ev.x, a = Number(m.amount);
       if (m.direction === "out") sub(m.symbol, a, m.ts);
