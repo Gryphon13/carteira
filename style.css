@@ -331,3 +331,5 @@ details.about[open] summary .lnk { display: none; }
 }
 .stat .v { white-space: nowrap; }
 .stat .v .sub2, .stat .v .small { white-space: nowrap; }
+/* widgets do TradingView: sem fundo branco no tema escuro */
+.tradingview-widget-container iframe { color-scheme: light; }
