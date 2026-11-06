@@ -1603,6 +1603,8 @@ function renderWalletForm() {
     : "";
 }
 function renderCadastros() {
+  // o botão avulso da Crypto.com só aparece até a carteira existir (depois fica na própria carteira)
+  $("#cdc-hint")?.classList.toggle("hidden", S.wallets.some((w) => w.kind === "cryptocom"));
   $("#wallet-list").innerHTML = S.wallets
     .map((w) => {
       const n = S.holdings.filter((h) => h.wallet_id === w.id);
@@ -2025,7 +2027,7 @@ async function importCryptoCom(files) {
   await sb.functions.invoke("sync", { body: { wallet_id: w.id }, region: REGION }).catch(() => {});
   await loadAll();
   rep.innerHTML = rep.innerHTML.replace(/<div class="muted">Atualizando saldos…<\/div>/, "<div class=\"muted\">Recalculando o preço médio…</div>");
-  await runHist(null, true);
+  await runHist(null, true, true);
 }
 
 async function importBinanceCSV(files) {
@@ -2093,12 +2095,12 @@ async function importBinanceCSV(files) {
 }
 
 // histórico da Binance (compras, vendas, convert, compras com reais) → preço médio
-async function runHist(btn, keep) {
+async function runHist(btn, keep, quiet) {
   const rep = reportBox();
   btn && (btn.disabled = true);
   rep.classList.remove("hidden");
   const before = keep ? rep.innerHTML.replace(/<div class="muted">Recalculando[^<]*<\/div>/, "") : "";
-  rep.innerHTML = before + '<span class="muted">Importando o histórico da Binance… a primeira vez pode levar uns 2 minutos.</span>';
+  rep.innerHTML = before + (quiet ? '<span class="muted">Recalculando o preço médio… leva uns 30 a 60 segundos.</span>' : '<span class="muted">Importando o histórico da Binance… a primeira vez pode levar uns 2 minutos.</span>');
   rep.scrollIntoView({ behavior: "smooth", block: "center" });
   try {
     const { data, error } = await sb.functions.invoke("historico", { body: {}, region: REGION });
@@ -2107,7 +2109,8 @@ async function runHist(btn, keep) {
       try { msg = (await error.context.json()).erro || msg; } catch { /* */ }
       throw new Error(msg);
     }
-    rep.innerHTML = before + `<div>✓ <b>Histórico da Binance</b>: ${data.operacoes} operação(ões) no total (novas agora: ${data.spot.novas} spot, ${data.convert.novas} convert, ${data.compras_com_reais.novas} compras/vendas com reais). Preço médio calculado para ${data.ativos_com_preco_medio} ativo(s).</div>` +
+    if (quiet) rep.innerHTML = before + `<div>✓ <b>Preço médio recalculado</b> para ${data.ativos_com_preco_medio} ativo(s), juntando Binance e Crypto.com.</div>`;
+    else rep.innerHTML = before + `<div>✓ <b>Histórico da Binance</b>: ${data.operacoes} operação(ões) no total (novas agora: ${data.spot.novas} spot, ${data.convert.novas} convert, ${data.compras_com_reais.novas} compras/vendas com reais). Preço médio calculado para ${data.ativos_com_preco_medio} ativo(s).</div>` +
       (data.completo ? `<div class="muted">Histórico lido desde ${new Date(data.historico_ate + "T12:00").toLocaleDateString("pt-BR")}.</div>` : `<div class="err">Ainda falta uma parte (lido até ${new Date(data.historico_ate + "T12:00").toLocaleDateString("pt-BR")}). Clique em "Importar histórico" de novo para continuar de onde parou.</div>`);
     await loadAll();
   } catch (e) {
