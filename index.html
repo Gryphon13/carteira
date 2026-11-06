@@ -177,8 +177,8 @@
       <section class="card">
         <div class="card-head"><h2>Carteiras e corretoras</h2></div>
         <div id="wallet-list" class="list"></div>
-        <input type="file" id="csv-file" accept=".csv,text/csv" multiple hidden />
-        <p class="hint">Operações antigas da Binance: a API da Binance não devolve mais trades de alguns anos atrás. Para recuperá-las, na Binance vá em <b>Carteira → Histórico de transações → Exportar / Gerar todos os extratos</b> (cada arquivo cobre até 12 meses), descompacte e use <b>Importar extrato (CSV)</b>. Pode escolher vários arquivos de uma vez; importar de novo não duplica.</p>
+        <input type="file" id="csv-file" accept=".csv,.zip,.xlsx,text/csv,application/zip" multiple hidden />
+        <p class="hint">Operações antigas da Binance: a API da Binance não devolve mais trades de alguns anos atrás. Para recuperá-las, na Binance vá em <b>Carteira → Histórico de transações → Exportar / Gerar todos os extratos</b> (cada arquivo cobre até 12 meses), descompacte e use <b>Importar extrato (CSV)</b>. Aceita o arquivo .zip como vem da Binance, ou o .csv/.xlsx de dentro dele. Pode escolher vários de uma vez; importar de novo não duplica.</p>
         <form id="wallet-form" class="form">
           <h3>Adicionar carteira</h3>
           <div class="row">
@@ -305,6 +305,6 @@
   </div>
 
   <script src="https://unpkg.com/lightweight-charts@4.2.3/dist/lightweight-charts.standalone.production.js"></script>
-  <script type="module" src="app.js?v=17"></script>
+  <script type="module" src="app.js?v=18"></script>
 </body>
 </html>

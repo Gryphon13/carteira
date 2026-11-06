@@ -1525,7 +1525,7 @@ async function runSync(walletId) {
   const btn = $("#sync");
   btn.disabled = true;
   btn.textContent = "Atualizando…";
-  const rep = $("#sync-report");
+  const rep = reportBox();
   rep.classList.remove("hidden");
   rep.innerHTML = '<span class="muted">Consultando blockchains e corretoras… pode levar até um minuto.</span>';
   try {
@@ -1551,6 +1551,17 @@ async function runSync(walletId) {
     btn.disabled = false;
     btn.textContent = "Atualizar saldos";
   }
+}
+
+// o quadro de avisos aparece na aba que estiver aberta
+function reportBox() {
+  const rep = $("#sync-report");
+  const vis = [...document.querySelectorAll("main.tab")].find((m) => !m.classList.contains("hidden"));
+  if (vis && !vis.contains(rep)) {
+    if (vis.id === "tab-painel") $(".hero").after(rep);
+    else vis.prepend(rep);
+  }
+  return rep;
 }
 
 // ------------------------------------------------------------------ extrato CSV da Binance
@@ -1588,35 +1599,77 @@ function csvDate(s) {
   const t = Date.parse(s + "Z");
   return isNaN(t) ? null : t;
 }
+// lê .csv, .xlsx ou .zip (com .csv/.xlsx dentro) e devolve uma lista de tabelas (linhas de células)
+async function readTables(file) {
+  const name = file.name.toLowerCase();
+  const buf = new Uint8Array(await file.arrayBuffer());
+  if (name.endsWith(".zip") || (buf[0] === 0x50 && buf[1] === 0x4b && !name.endsWith(".xlsx"))) {
+    const { unzipSync } = await import("https://cdn.jsdelivr.net/npm/fflate@0.8.2/esm/browser.js");
+    const files = unzipSync(buf);
+    const out = [];
+    for (const [n, data] of Object.entries(files)) {
+      if (/\.(csv|xlsx)$/i.test(n) && !n.startsWith("__MACOSX")) out.push(...(await readTables(new File([data], n))));
+    }
+    return out;
+  }
+  if (name.endsWith(".xlsx") || name.endsWith(".xls")) {
+    const XLSX = await import("https://cdn.jsdelivr.net/npm/xlsx@0.18.5/+esm");
+    const wb = XLSX.read(buf, { type: "array" });
+    return wb.SheetNames.map((sn) => XLSX.utils.sheet_to_json(wb.Sheets[sn], { header: 1, raw: true, defval: "" }));
+  }
+  return [parseCSV(new TextDecoder().decode(buf))];
+}
+const norm = (x) => String(x ?? "").trim().toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9]+/g, "_");
+const HEAD = {
+  t: ["utc_time", "time", "date", "date_utc", "horario_utc", "hora_utc", "data_utc", "data", "horario", "tempo_utc"],
+  a: ["account", "conta"],
+  o: ["operation", "operacao", "tipo", "type"],
+  c: ["coin", "moeda", "asset", "ativo", "criptomoeda"],
+  v: ["change", "alteracao", "alterar", "mudanca", "variacao", "quantidade", "amount", "valor"],
+};
 const FIATS = new Set(["BRL", "USD", "EUR"]);
 const isCash = (c) => STABLE.has(c) || FIATS.has(c);
 async function importBinanceCSV(files) {
-  const rep = $("#sync-report");
+  const rep = reportBox();
   rep.classList.remove("hidden");
   rep.innerHTML = '<span class="muted">Lendo o extrato…</span>';
   rep.scrollIntoView({ behavior: "smooth", block: "center" });
   const all = [];
+  const seenHeads = [];
   for (const f of files) {
-    const rows = parseCSV(await f.text());
-    const head = rows.shift().map((h) => h.trim().toLowerCase());
-    const ix = (n) => head.indexOf(n);
-    const iT = ix("utc_time"), iA = ix("account"), iO = ix("operation"), iC = ix("coin"), iV = ix("change");
-    if (iT < 0 || iO < 0 || iC < 0 || iV < 0) {
-      rep.innerHTML = `<div class="err">O arquivo ${esc(f.name)} não parece ser o "Histórico de transações" da Binance (faltam as colunas UTC_Time, Operation, Coin e Change).</div>`;
+    let tables;
+    try { tables = await readTables(f); } catch (e) {
+      rep.innerHTML = `<div class="err">Não consegui abrir ${esc(f.name)}: ${esc(e.message || e)}</div>`;
       return;
     }
-    for (const r of rows) {
-      const ts = csvDate(r[iT] || "");
-      const v = Number(String(r[iV] || "").replace(/[^\d.eE+-]/g, ""));
-      if (!ts || !isFinite(v) || !v) continue;
-      all.push({ ts, acc: (r[iA] || "").trim(), op: (r[iO] || "").trim(), coin: (r[iC] || "").trim().toUpperCase(), v });
+    for (const rows of tables) {
+      // o cabeçalho pode não estar na primeira linha
+      const hi = rows.findIndex((r) => r.some((c) => HEAD.o.includes(norm(c))) && r.some((c) => HEAD.c.includes(norm(c))));
+      if (hi < 0) { seenHeads.push(`${f.name}: ${(rows[0] || []).slice(0, 8).join(" | ")}`); continue; }
+      const head = rows[hi].map(norm);
+      const ix = (k) => head.findIndex((h) => HEAD[k].includes(h));
+      const iT = ix("t"), iA = ix("a"), iO = ix("o"), iC = ix("c"), iV = ix("v");
+      if (iT < 0 || iV < 0) { seenHeads.push(`${f.name}: ${rows[hi].join(" | ")}`); continue; }
+      for (const r of rows.slice(hi + 1)) {
+        const raw = r[iT];
+        const ts = typeof raw === "number" ? Math.round((raw - 25569) * 86400e3) : csvDate(String(raw || ""));
+        const vv = r[iV];
+        const v = typeof vv === "number" ? vv : Number(String(vv || "").replace(/\s/g, "").replace(/,(?=\d{1,8}$)/, ".").replace(/[^\d.eE+-]/g, ""));
+        if (!ts || !isFinite(v) || !v) continue;
+        all.push({ ts, acc: String(r[iA] ?? "").trim(), op: String(r[iO] ?? "").trim(), coin: String(r[iC] ?? "").trim().toUpperCase(), v });
+      }
     }
   }
-  const SKIP = /transfer|subscription|redemption|savings purchase|savings principal|staking purchase|staking redemption|main account|funding account|isolated|margin loan|repay|collateral/i;
-  const INCOME = /interest|distribution|reward|airdrop|staking rewards|launchpool|mining|cashback|commission|bonus|dividend/i;
-  const MOVE_IN = /^deposit$|crypto deposit|fiat deposit|p2p.*(buy|receive)/i;
-  const MOVE_OUT = /^withdraw|crypto withdraw|fiat withdraw/i;
-  const FEE = /fee/i;
+  if (!all.length) {
+    rep.innerHTML = `<div class="err">Não encontrei lançamentos no arquivo. Ele precisa ser o <b>Histórico de transações</b> da Binance (colunas de data, operação, moeda e alteração).</div>`
+      + (seenHeads.length ? `<div class="muted small">Cabeçalhos encontrados: ${esc(seenHeads.slice(0, 3).join(" · "))}</div>` : "");
+    return;
+  }
+  const SKIP = /transfer|subscription|redemption|savings purchase|savings principal|staking purchase|staking redemption|main account|funding account|isolated|margin loan|repay|collateral|transfer[eê]ncia|assinatura|resgate|subscri[cç][aã]o/i;
+  const INCOME = /interest|distribution|reward|airdrop|staking rewards|launchpool|mining|cashback|commission|bonus|dividend|juros|distribui[cç][aã]o|recompensa|rendimento|b[oô]nus|comiss[aã]o/i;
+  const MOVE_IN = /^deposit$|crypto deposit|fiat deposit|p2p.*(buy|receive)|^dep[oó]sito/i;
+  const MOVE_OUT = /^withdraw|crypto withdraw|fiat withdraw|^saque|^retirada/i;
+  const FEE = /fee|taxa/i;
   // agrupa por segundo + conta (uma operação gera várias linhas)
   const groups = new Map(), moves = [], income = new Map();
   for (const r of all) {
@@ -1686,7 +1739,7 @@ async function importBinanceCSV(files) {
 
 // histórico da Binance (compras, vendas, convert, compras com reais) → preço médio
 async function runHist(btn, keep) {
-  const rep = $("#sync-report");
+  const rep = reportBox();
   btn && (btn.disabled = true);
   rep.classList.remove("hidden");
   const before = keep ? rep.innerHTML.replace(/<div class="muted">Recalculando[^<]*<\/div>/, "") : "";
@@ -2215,7 +2268,7 @@ function closeModal() {
 }
 // avisos dentro da página (alert/confirm do navegador podem ser bloqueados)
 function alertMsg(text) {
-  const rep = $("#sync-report");
+  const rep = reportBox();
   rep.classList.remove("hidden");
   rep.innerHTML = `<div class="err">${esc(text)}</div>`;
   rep.scrollIntoView({ behavior: "smooth", block: "center" });
