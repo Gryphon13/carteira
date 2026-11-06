@@ -269,7 +269,7 @@ body { transition: background .2s, color .2s; -webkit-font-smoothing: antialiase
 .card-head h2 { font-size: 17px; letter-spacing: -.01em; }
 .tab { gap: 18px; padding: 24px; }
 .hero { padding: 6px 2px 2px; }
-.hero .muted:first-child { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; }
+.hero > div > .muted:first-child { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; }
 .total { font-size: 46px; letter-spacing: -0.03em; }
 .chip { font-weight: 500; }
 .stat { border-radius: 14px; }
@@ -349,3 +349,7 @@ details.about[open] summary .lnk { display: none; }
 /* Exportar composição */
 .export-card { max-width: 560px; }
 .x-img { width: 100%; height: auto; border-radius: 14px; border: 1px solid var(--line); background: var(--panel-2); min-height: 200px; }
+
+/* Futuros */
+.stat > .sub2, .d-sum .stat > .sub2 { font-size: 12px; color: var(--muted); margin-top: 4px; font-family: var(--mono); line-height: 1.5; }
+#fut-sub { font-size: 13px; }

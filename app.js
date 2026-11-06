@@ -1330,7 +1330,7 @@ async function renderFutures() {
   const total = pnl + fees + funding + ins + other;
   const totalBrlThen = sumBrl(res);
   const putIn = rows.filter((r) => r.kind === "transfer" && r.v > 0).reduce((a, r) => a + r.v, 0);
-  const takenOut = -rows.filter((r) => r.kind === "transfer" && r.v < 0).reduce((a, r) => a + r.v, 0);
+  const takenOut = Math.abs(rows.filter((r) => r.kind === "transfer" && r.v < 0).reduce((a, r) => a + r.v, 0));
   const pnlRows = rows.filter((r) => r.kind === "pnl");
   const wins = pnlRows.filter((r) => r.v > 0), losses = pnlRows.filter((r) => r.v < 0);
   const trades = new Set(rows.filter((r) => r.kind === "fee" && r.trade_id).map((r) => r.trade_id)).size;
