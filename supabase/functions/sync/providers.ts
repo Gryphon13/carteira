@@ -1,6 +1,8 @@
 // Fontes de dados de cada rede/corretora.
 import { HDKey } from "npm:@scure/bip32@1.6.2";
 import * as btc from "npm:@scure/btc-signer@1.6.0";
+import { base58 } from "npm:@scure/base@1.1.9";
+import { blake2b } from "npm:@noble/hashes@1.5.0/blake2b";
 
 export type Holding = {
   network: string;
@@ -305,7 +307,40 @@ export async function evm(address: string, networks: string[]): Promise<Result> 
 
 // ---------------------------------------------------------------- Polkadot via Subscan
 const DOT_NETS = ["polkadot", "assethub-polkadot"];
+// Saldo direto da blockchain (nós públicos da Parity, sem chave): System.Account de cada rede.
+// Desde a migração de 2025 o DOT fica no Asset Hub; a rede principal (relay) é consultada também.
+const DOT_RPC: Record<string, string> = {
+  "assethub-polkadot": "https://polkadot-asset-hub-rpc.polkadot.io",
+  polkadot: "https://rpc.polkadot.io",
+};
+const hexOf = (u: Uint8Array) => [...u].map((b) => b.toString(16).padStart(2, "0")).join("");
+async function dotRpc(address: string): Promise<Holding[]> {
+  const raw = base58.decode(address.trim());
+  const acc = raw.length === 35 ? raw.slice(1, 33) : raw.slice(2, 34); // prefixo de 1 ou 2 bytes
+  const key = "0x26aa394eea5630e07c48ae0c9558cef7b99d880ec681799c0cf30e8886371da9" + hexOf(blake2b(acc, { dkLen: 16 })) + hexOf(acc);
+  const out: Holding[] = [];
+  let ok = 0;
+  for (const [net, url] of Object.entries(DOT_RPC)) {
+    try {
+      const r = await fetchJson(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: 1, jsonrpc: "2.0", method: "state_getStorage", params: [key] }) });
+      ok++;
+      const h: string | null = r.result;
+      if (!h || h.length < 2 + 96) continue;
+      const le = (from: number) => { let v = 0n; for (let i = 15; i >= 0; i--) v = (v << 8n) + BigInt(parseInt(h.slice(2 + (from + i) * 2, 4 + (from + i) * 2), 16)); return v; };
+      const amt = Number(le(16) + le(32)) / 1e10; // livre + reservado (DOT em nomination pool fica na conta do pool e não entra)
+      if (amt > 0) out.push({ network: net, symbol: "DOT", name: "Polkadot", amount: amt });
+    } catch { /* nó indisponível */ }
+  }
+  if (!ok) throw new Error("nós públicos da Polkadot indisponíveis no momento");
+  return out;
+}
 export async function polkadot(address: string): Promise<Result> {
+  const holdings = await dotRpc(address);
+  // movimentações: só com chave válida da Subscan (opcional)
+  const txs = await polkadotSubscan(address).then((r) => r.txs).catch(() => [] as Tx[]);
+  return { holdings, txs };
+}
+async function polkadotSubscan(address: string): Promise<Result> {
   const key = Deno.env.get("SUBSCAN_API_KEY");
   if (!key) throw new Error("Falta a chave da Subscan (SUBSCAN_API_KEY) no Supabase");
   const post = (net: string, path: string, body: unknown) =>

@@ -1833,7 +1833,8 @@ function renderCadastros() {
       return `<div class="item ${w.active ? "" : "off"}">
         <span class="badge">${KIND[w.kind]}</span>
         <div class="grow"><b>${esc(w.label)}</b> <span class="muted small">${money(toCcy(v))}${last ? " · " + ago(last) : ""}</span>
-          <div class="addr">${esc(w.address || "chave guardada no Supabase")}${w.kind === "evm" ? " · " + (w.networks || []).map((x) => NET[x] || x).join(", ") : ""}</div></div>
+          <div class="addr">${esc(w.address || "chave guardada no Supabase")}${w.kind === "evm" ? " · " + (w.networks || []).map((x) => NET[x] || x).join(", ") : ""}</div>
+          ${S.syncStatus[w.id] ? `<div class="small ${S.syncStatus[w.id].ok ? "up" : "err"}">${S.syncStatus[w.id].ok ? "✓ atualizado agora" : "✗ " + esc(S.syncStatus[w.id].msg)}</div>` : ""}</div>
         <button class="btn small" data-act="sync" data-id="${w.id}">Atualizar</button>
         ${w.kind === "cryptocom" ? `<button class="btn small" data-act="cdc" data-id="${w.id}">Importar extrato (CSV)</button>` : ""}
         ${w.kind === "binance" ? `<button class="btn small" data-act="hist" data-id="${w.id}">Importar histórico</button><button class="btn small" data-act="csv" data-id="${w.id}" title="Para operações antigas que a API da Binance não devolve">Importar extrato (CSV)</button>` : ""}
@@ -1916,7 +1917,23 @@ async function btcDiscover(w, onProgress) {
 }
 
 // ------------------------------------------------------------------ sincronização
-async function runSync(walletId) {
+// avisos flutuantes (sempre visíveis, no canto da tela)
+function toast(html, kind = "ok", ms = 7000) {
+  let box = $("#toasts");
+  if (!box) { box = document.createElement("div"); box.id = "toasts"; document.body.appendChild(box); }
+  const el = document.createElement("div");
+  el.className = `toast ${kind}`;
+  el.innerHTML = `<div class="t-body">${html}</div><button type="button" class="t-x" aria-label="Fechar">×</button>`;
+  el.querySelector(".t-x").onclick = () => el.remove();
+  box.appendChild(el);
+  if (ms) setTimeout(() => el.classList.add("out"), ms);
+  if (ms) setTimeout(() => el.remove(), ms + 400);
+  return el;
+}
+S.syncStatus = {};
+async function runSync(walletId, wbtn) {
+  if (wbtn) { wbtn.disabled = true; wbtn.textContent = "Atualizando…"; }
+  const wait = toast(walletId ? `Atualizando <b>${esc(S.wallets.find((w) => w.id === walletId)?.label || "carteira")}</b>…` : "Atualizando todas as carteiras… pode levar até um minuto.", "info", 0);
   const btn = $("#sync");
   btn.disabled = true;
   btn.textContent = "Atualizando…";
@@ -1935,16 +1952,29 @@ async function runSync(walletId) {
       try { msg = (await error.context.json()).erro || msg; } catch { /* */ }
       throw new Error(msg);
     }
-    rep.innerHTML = (data.carteiras || [])
+    const lines = (data.carteiras || [])
       .map((c) => c.ok ? `<div>✓ <b>${esc(c.carteira)}</b> <span class="muted">${c.ativos} ativo(s), ${c.movimentacoes} movimentação(ões)</span></div>`
         : c.erro ? `<div class="err">✗ <b>${esc(c.carteira)}</b>: ${esc(c.erro)}</div>` : `<div class="muted">${esc(c.carteira)}: ${esc(c.aviso)}</div>`)
       .join("") || '<span class="muted">Nenhuma carteira ativa.</span>';
+    rep.innerHTML = lines;
+    for (const c of data.carteiras || []) {
+      const w = S.wallets.find((x) => x.label === c.carteira);
+      if (w && (c.ok || c.erro)) S.syncStatus[w.id] = { ok: !!c.ok, msg: c.ok ? `${c.ativos} ativo(s)` : c.erro, at: Date.now() };
+    }
+    const errs = (data.carteiras || []).filter((c) => c.erro);
+    wait.remove();
+    if (errs.length) toast(`<b>${errs.length} carteira(s) com problema</b>${errs.map((c) => `<div>✗ ${esc(c.carteira)}: ${esc(c.erro)}</div>`).join("")}`, "err", 15000);
+    else toast(`✓ <b>Saldos atualizados</b> (${(data.carteiras || []).length} carteira(s)).`, "ok");
     await loadAll();
   } catch (e) {
     rep.innerHTML = `<div class="err">Erro: ${esc(e.message)}</div>`;
+    wait.remove();
+    toast(`✗ <b>Não deu para atualizar</b>: ${esc(e.message)}`, "err", 15000);
   } finally {
     btn.disabled = false;
     btn.textContent = "Atualizar saldos";
+    if (wbtn) { wbtn.disabled = false; wbtn.textContent = "Atualizar"; }
+    renderCadastros();
   }
 }
 
@@ -2329,12 +2359,14 @@ async function runHist(btn, keep, quiet) {
       try { msg = (await error.context.json()).erro || msg; } catch { /* */ }
       throw new Error(msg);
     }
+    toast(quiet ? "✓ <b>Preço médio recalculado</b>." : `✓ <b>Histórico da Binance importado</b>: ${data.operacoes} operações.`, "ok");
     if (quiet) rep.innerHTML = before + `<div>✓ <b>Preço médio recalculado</b> para ${data.ativos_com_preco_medio} ativo(s), juntando Binance e Crypto.com.</div>`;
     else rep.innerHTML = before + `<div>✓ <b>Histórico da Binance</b>: ${data.operacoes} operação(ões) no total (novas agora: ${data.spot.novas} spot, ${data.convert.novas} convert, ${data.compras_com_reais.novas} compras/vendas com reais). Preço médio calculado para ${data.ativos_com_preco_medio} ativo(s).</div>` +
       (data.completo ? `<div class="muted">Histórico lido desde ${new Date(data.historico_ate + "T12:00").toLocaleDateString("pt-BR")}.</div>` : `<div class="err">Ainda falta uma parte (lido até ${new Date(data.historico_ate + "T12:00").toLocaleDateString("pt-BR")}). Clique em "Importar histórico" de novo para continuar de onde parou.</div>`);
     await loadAll();
   } catch (e) {
     rep.innerHTML = `<div class="err">Erro no histórico: ${esc(e.message)}</div>`;
+    toast(`✗ <b>Erro no histórico</b>: ${esc(e.message)}`, "err", 15000);
   } finally {
     btn && (btn.disabled = false);
   }
@@ -2744,7 +2776,7 @@ function bind() {
     const b = e.target.closest("button[data-act]");
     if (!b) return;
     const w = S.wallets.find((x) => x.id === b.dataset.id);
-    if (b.dataset.act === "sync") return runSync(w.id);
+    if (b.dataset.act === "sync") return runSync(w.id, b);
     if (b.dataset.act === "hist") return runHist(b);
     if (b.dataset.act === "csv") return $("#csv-file").click();
     if (b.dataset.act === "cdc") return $("#cdc-file").click();
