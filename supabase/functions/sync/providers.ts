@@ -314,9 +314,14 @@ const DOT_RPC: Record<string, string> = {
   polkadot: "https://rpc.polkadot.io",
 };
 const hexOf = (u: Uint8Array) => [...u].map((b) => b.toString(16).padStart(2, "0")).join("");
-async function dotRpc(address: string): Promise<Holding[]> {
+// conta (chave pública de 32 bytes) de um endereço SS58 em qualquer formato (1…, 5…, 15…)
+function dotAcc(address: string): Uint8Array {
   const raw = base58.decode(address.trim());
-  const acc = raw.length === 35 ? raw.slice(1, 33) : raw.slice(2, 34); // prefixo de 1 ou 2 bytes
+  return raw.length === 35 ? raw.slice(1, 33) : raw.slice(2, 34); // prefixo de 1 ou 2 bytes
+}
+const sameAcc = (a: string, b: string) => { try { return hexOf(dotAcc(a)) === hexOf(dotAcc(b)); } catch { return a === b; } };
+async function dotRpc(address: string): Promise<Holding[]> {
+  const acc = dotAcc(address);
   const key = "0x26aa394eea5630e07c48ae0c9558cef7b99d880ec681799c0cf30e8886371da9" + hexOf(blake2b(acc, { dkLen: 16 })) + hexOf(acc);
   const out: Holding[] = [];
   let ok = 0;
@@ -334,49 +339,80 @@ async function dotRpc(address: string): Promise<Holding[]> {
   if (!ok) throw new Error("nós públicos da Polkadot indisponíveis no momento");
   return out;
 }
+export let dotHistErr = "";
 export async function polkadot(address: string): Promise<Result> {
   const holdings = await dotRpc(address);
-  // movimentações: só com chave válida da Subscan (opcional)
-  const txs = await polkadotSubscan(address).then((r) => r.txs).catch(() => [] as Tx[]);
+  // movimentações: precisam de chave (PubFi pf_sk_… ou Subscan direta); sem ela, só o saldo
+  dotHistErr = "";
+  const txs = await polkadotHist(address).catch((e) => { dotHistErr = String(e?.message || e); return [] as Tx[]; });
   return { holdings, txs };
 }
-async function polkadotSubscan(address: string): Promise<Result> {
-  const key = Deno.env.get("SUBSCAN_API_KEY");
-  if (!key) throw new Error("Falta a chave da Subscan (SUBSCAN_API_KEY) no Supabase");
+// Histórico via Subscan. Chave da PubFi (gratuita, pf_sk_…) passa pelo gateway api.pubfi.ai;
+// chave direta da Subscan (planos pagos) vai em X-API-Key no host da rede.
+async function polkadotHist(address: string): Promise<Tx[]> {
+  const key = (Deno.env.get("SUBSCAN_API_KEY") || "").trim();
+  if (!key) throw new Error("sem chave (SUBSCAN_API_KEY)");
+  const pubfi = key.startsWith("pf_sk_");
   const post = (net: string, path: string, body: unknown) =>
-    fetchJson(`https://${net}.api.subscan.io${path}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "X-API-Key": key },
-      body: JSON.stringify(body),
-    });
-  const holdings: Holding[] = [];
+    pubfi
+      ? fetchJson(`https://api.pubfi.ai/v1/gateway/subscan/${net}${path}:free`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
+          body: JSON.stringify(body),
+        }, 2)
+      : fetchJson(`https://${net}.api.subscan.io${path}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "X-API-Key": key },
+          body: JSON.stringify(body),
+        }, 2);
   const txs: Tx[] = [];
+  const errs: string[] = [];
+  let okNets = 0;
+  const ROWS = [100, 50, 25, 10];
+  let row = 100;
   for (const net of DOT_NETS) {
-    const r = await post(net, "/api/v2/scan/search", { key: address });
-    if (r.code === 0 && r.data?.account) {
-      const bal = Number(r.data.account.balance || 0);
-      if (bal > 0) holdings.push({ network: net, symbol: "DOT", name: "Polkadot", amount: bal });
-    } else if (r.code !== 10004) {
-      throw new Error(`Subscan (${net}): ${r.message}`);
-    }
-    const t = await post(net, "/api/v2/scan/transfers", { address, row: 25, page: 0 });
-    for (const x of t.data?.transfers ?? []) {
-      if (!x.success) continue;
-      const out = x.from === address;
-      txs.push({
-        network: net,
-        tx_hash: x.hash,
-        ts: new Date(x.block_timestamp * 1000).toISOString(),
-        direction: out ? "out" : "in",
-        symbol: x.asset_symbol || "DOT",
-        amount: Number(x.amount),
-        counterparty: out ? x.to : x.from,
-        url: `https://${net}.subscan.io/extrinsic/${x.hash}`,
-      });
+    try {
+      for (let page = 0; page < 40; page++) {
+        let t: any;
+        for (;;) {
+          try {
+            t = await post(net, "/api/v2/scan/transfers", { address, row, page });
+            break;
+          } catch (e) {
+            // o plano grátis limita linhas por página: diminui e tenta de novo
+            const i = ROWS.indexOf(row);
+            if (/row_limit/.test(String((e as Error).message)) && i < ROWS.length - 1 && page === 0) { row = ROWS[i + 1]; continue; }
+            throw e;
+          }
+        }
+        if (t.code !== 0) throw new Error(t.message || `código ${t.code}`);
+        const list = t.data?.transfers ?? [];
+        for (const x of list) {
+          if (!x.success) continue;
+          const out = sameAcc(x.from, address);
+          if (out && sameAcc(x.to, address)) continue;
+          txs.push({
+            network: net,
+            tx_hash: x.hash || x.extrinsic_index,
+            ts: new Date(x.block_timestamp * 1000).toISOString(),
+            direction: out ? "out" : "in",
+            symbol: x.asset_symbol || "DOT",
+            amount: Number(x.amount),
+            counterparty: out ? x.to : x.from,
+            url: `https://${net}.subscan.io/extrinsic/${x.extrinsic_index || x.hash}`,
+          });
+        }
+        if (list.length < row) break;
+        await sleep(pubfi ? 1100 : 300);
+      }
+      okNets++;
+    } catch (e) {
+      errs.push(`${net}: ${String((e as Error).message || e).slice(0, 160)}`);
     }
   }
-  if (!holdings.length) holdings.push({ network: "polkadot", symbol: "DOT", name: "Polkadot", amount: 0 });
-  return { holdings: holdings.filter((h) => h.amount > 0), txs };
+  if (!okNets) throw new Error(`Subscan${pubfi ? " via PubFi" : ""} — ${errs.join(" | ")}`);
+  if (errs.length) dotHistErr = errs.join(" | ");
+  return txs;
 }
 
 // ---------------------------------------------------------------- Cardano via Koios

@@ -1,7 +1,7 @@
 // Sincroniza saldos e movimentações de todas as carteiras e grava uma foto do patrimônio.
 // Chamada pela página (usuário logado) ou pelo agendamento diário (cabeçalho x-cron-secret).
 import { createClient } from "npm:@supabase/supabase-js@2.58.0";
-import { binance, binancePrices, bitcoin, cardano, evm, Holding, polkadot, priceFromBinance, Result, yahoo } from "./providers.ts";
+import { binance, binancePrices, bitcoin, cardano, dotHistErr, evm, Holding, polkadot, priceFromBinance, Result, yahoo } from "./providers.ts";
 
 const cors = {
   "Access-Control-Allow-Origin": "*",
@@ -194,7 +194,7 @@ Deno.serve(async (req) => {
         const t0 = Date.now();
         try {
           const r = await runWallet(body.teste);
-          return json({ ms: Date.now() - t0, holdings: r.holdings, txs: r.txs.slice(0, 5), n_txs: r.txs.length });
+          return json({ ms: Date.now() - t0, holdings: r.holdings, txs: r.txs.slice(0, 5), n_txs: r.txs.length, dot_hist: dotHistErr || undefined });
         } catch (e) {
           return json({ ms: Date.now() - t0, erro: String((e as Error).message || e) });
         }
