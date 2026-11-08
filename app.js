@@ -2309,6 +2309,7 @@ async function importBinanceCSV(files) {
   rep.scrollIntoView({ behavior: "smooth", block: "center" });
   const all = [];
   const seenHeads = [];
+  let validHead = false;
   for (const f of files) {
     let tables;
     try { tables = await readTables(f); } catch (e) {
@@ -2324,6 +2325,7 @@ async function importBinanceCSV(files) {
       const iT = ix("t"), iA = ix("a"), iO = ix("o"), iC = ix("c"), iV = ix("v"), iR = ix("r");
       if (iT < 0 || iV < 0) { seenHeads.push(`${f.name}: ${rows[hi].join(" | ")}`); continue; }
       const off = fileOffsetMs(f.name, head[iT]); // horário local do arquivo → UTC
+      validHead = true;
       for (const r of rows.slice(hi + 1)) {
         const raw = r[iT];
         const t0 = typeof raw === "number" ? Math.round((raw - 25569) * 86400e3) : csvDate(String(raw || ""));
@@ -2334,6 +2336,11 @@ async function importBinanceCSV(files) {
         all.push({ ts, acc: String(r[iA] ?? "").trim(), op: String(r[iO] ?? "").trim(), coin: String(r[iC] ?? "").trim().toUpperCase(), v, rem: iR >= 0 ? String(r[iR] ?? "").trim() : "" });
       }
     }
+  }
+  if (!all.length && validHead) {
+    rep.innerHTML = `<div class="err">O arquivo da Binance veio <b>vazio</b>: o formato está certo, mas não há nenhum lançamento no período escolhido (a própria Binance escreveu "Nenhum dado corresponde aos critérios"). Gere de novo escolhendo um período em que houve movimentação.</div>`;
+    toast("Arquivo da Binance sem lançamentos no período", "err");
+    return;
   }
   if (!all.length) {
     rep.innerHTML = `<div class="err">Não encontrei lançamentos no arquivo. Ele precisa ser o <b>Histórico de transações</b> da Binance (colunas de data, operação, moeda e alteração).</div>`
