@@ -404,3 +404,6 @@ label.inline select { width: auto; }
 .tgt-bar.rsi { position: relative; overflow: visible; }
 .tgt-bar.rsi i { background: var(--muted); }
 .tgt-bar.rsi s { position: absolute; top: -3px; width: 2px; height: 12px; background: var(--accent); border-radius: 2px; text-decoration: none; }
+.ch-th { white-space: nowrap; }
+.per-btn { font: inherit; font-size: 11px; font-weight: 700; color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, transparent); border: 0; border-radius: 99px; padding: 2px 8px; margin-left: 2px; cursor: pointer; text-transform: none; letter-spacing: 0; }
+.per-btn:hover { background: color-mix(in srgb, var(--accent) 26%, transparent); }

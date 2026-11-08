@@ -31,6 +31,7 @@ const S = {
   hide: store("hide") === "1",
   filters: loadFilters(),
   sort: { k: "value", d: -1 },
+  chPer: ["24h", "7d", "30d"].includes(store("chPer")) ? store("chPer") : "24h", // período da coluna de variação
 };
 function loadFilters() {
   const def = { q: "", locals: [], net: "", res: "", min: "", minq: "", spam: false };
@@ -140,17 +141,18 @@ const CGM = (() => {
 })();
 const saveCGM = () => { try { localStorage.setItem("carteira.cgm", JSON.stringify(CGM)); } catch { /* */ } };
 let cgBusy = false;
+const refOf = (px, pctv) => (px && pctv != null && isFinite(pctv) && pctv > -100 ? px / (1 + pctv / 100) : null);
 async function loadMarkets() {
   if (cgBusy) return;
   const syms = new Set();
   for (const h of S.holdings) if (!holdingFlag(h) && /^[A-Z0-9]{2,10}$/.test(h.symbol)) syms.add(h.symbol);
-  const stale = [...syms].filter((x) => !CGM.map[x] || Date.now() - (CGM.map[x].at || 0) > (CGM.map[x].id ? 15 : 24 * 60) * 60e3);
+  const stale = [...syms].filter((x) => !CGM.map[x] || (CGM.map[x].id && !("ref7" in CGM.map[x])) || Date.now() - (CGM.map[x].at || 0) > (CGM.map[x].id ? 15 : 24 * 60) * 60e3);
   if (!stale.length) return;
   cgBusy = true;
   try {
     for (let i = 0; i < stale.length; i += 40) {
       const part = stale.slice(i, i + 40); // CoinGecko aceita até 50 símbolos por consulta
-      const r = await fetch(`${CG}/coins/markets?vs_currency=usd&include_tokens=top&per_page=250&symbols=${part.map((x) => x.toLowerCase()).join(",")}`);
+      const r = await fetch(`${CG}/coins/markets?vs_currency=usd&include_tokens=top&per_page=250&price_change_percentage=24h,7d,30d&symbols=${part.map((x) => x.toLowerCase()).join(",")}`);
       if (!r.ok) break;
       const list = await r.json();
       const got = new Set();
@@ -162,7 +164,11 @@ async function loadMarkets() {
           at: Date.now(), id: x.id, name: x.name, image: String(x.image || "").replace("/large/", "/small/"), rank: x.market_cap_rank,
           mcap: x.market_cap, fdv: x.fully_diluted_valuation, vol: x.total_volume, circ: x.circulating_supply, total: x.total_supply, max: x.max_supply,
           ath: x.ath, athDate: x.ath_date, athPct: x.ath_change_percentage, atl: x.atl, atlDate: x.atl_date, atlPct: x.atl_change_percentage,
-          high24: x.high_24h, low24: x.low_24h,
+          high24: x.high_24h, low24: x.low_24h, price: x.current_price,
+          // preço de referência de cada período (assim a variação acompanha o preço ao vivo)
+          ref24: refOf(x.current_price, x.price_change_percentage_24h_in_currency),
+          ref7: refOf(x.current_price, x.price_change_percentage_7d_in_currency),
+          ref30: refOf(x.current_price, x.price_change_percentage_30d_in_currency),
         };
       }
       for (const k of part) if (!got.has(k)) CGM.map[k] = { at: Date.now(), id: null };
@@ -189,7 +195,17 @@ function livePrice(sym, fallback) {
 }
 function change24(sym) {
   const l = S.live[sym];
-  return l && l.o ? (l.p - l.o) / l.o : null;
+  if (l && l.o) return (l.p - l.o) / l.o;
+  const m = CGM.map[sym];
+  return m?.ref24 && m.price ? livePrice(sym, m.price) / m.ref24 - 1 : null;
+}
+// variação no período escolhido na coluna da tabela (24h, 7 dias, 30 dias)
+const PERIODS = [["24h", "24h"], ["7d", "7 dias"], ["30d", "30 dias"]];
+function changeP(sym, per = S.chPer) {
+  if (per === "24h") return change24(sym);
+  const m = CGM.map[sym], ref = per === "7d" ? m?.ref7 : m?.ref30;
+  if (STABLE.has(sym)) return 0;
+  return ref && m.price ? livePrice(sym, m.price) / ref - 1 : null;
 }
 const KIND_LOCAL = { b3: "B3", renda_fixa: "Renda fixa", outro: "Outros" };
 // spam/suspeito: sua marcação manual vale mais que a automática
@@ -239,7 +255,7 @@ function cryptoRows(useFilters = false) {
       pnlUsd = p * r.amount - costUsd;
       avgSrc = "binance";
     }
-    return { ...r, price: p, value: p != null ? p * r.amount : null, ch: change24(r.sym), hidden: !!st.hidden, st, pnlUsd, costUsd, avgSrc, cb };
+    return { ...r, price: p, value: p != null ? p * r.amount : null, ch: change24(r.sym), chP: changeP(r.sym), hidden: !!st.hidden, st, pnlUsd, costUsd, avgSrc, cb };
   });
 }
 function manualRows() {
@@ -279,7 +295,7 @@ function filteredCrypto() {
   return cryptoRows(true).filter((r) =>
     r.parts.length &&
     (S.filters.spam || r.hasPrice || S.live[r.sym]) &&
-    passCommon({ sym: r.sym, name: r.name, amount: r.amount, valueCcy: toCcy(r.value), pnl: r.pnlUsd, ch: r.ch }));
+    passCommon({ sym: r.sym, name: r.name, amount: r.amount, valueCcy: toCcy(r.value), pnl: r.pnlUsd, ch: r.chP }));
 }
 function filteredManual() {
   const f = S.filters;
@@ -477,9 +493,9 @@ function renderPainel() {
   const th = (k, label, extra = "") => `<th data-k="${k}" class="sortable ${extra}">${label}${arrow(k)}</th>`;
 
   // tabela cripto
-  const rows = sortRows(filteredCrypto(), (r, k) => ({ sym: r.sym, price: r.price, ch: r.ch, amount: r.amount, value: r.value, pnl: r.pnlUsd })[k]);
+  const rows = sortRows(filteredCrypto(), (r, k) => ({ sym: r.sym, price: r.price, ch: r.chP, amount: r.amount, value: r.value, pnl: r.pnlUsd })[k]);
   const totalC = cryptoRows().filter((r) => !r.hidden).reduce((s, r) => s + (r.value || 0), 0);
-  const head = `<tr>${th("sym", "Ativo")}${th("price", "Preço")}<th class="hide-sm">Preço médio</th>${th("ch", "24h")}${th("amount", "Quantidade", "hide-sm")}${th("value", "Valor")}<th class="hide-sm">% cart.</th>${th("pnl", "Resultado", "hide-sm")}</tr>`;
+  const head = `<tr>${th("sym", "Ativo")}${th("price", "Preço")}<th class="hide-sm">Preço médio</th><th data-k="ch" class="sortable ch-th">Var. <button type="button" class="per-btn" data-per title="Trocar o período: 24h → 7 dias → 30 dias">${PERIODS.find((x) => x[0] === S.chPer)[1]} ▾</button>${arrow("ch")}</th>${th("amount", "Quantidade", "hide-sm")}${th("value", "Valor")}<th class="hide-sm">% cart.</th>${th("pnl", "Resultado", "hide-sm")}</tr>`;
   const body = rows
     .map((r) => {
       const locs = [...new Set(r.parts.map((p) => `${p.source} · ${NET[p.network] || p.network}`))];
@@ -493,7 +509,7 @@ function renderPainel() {
         <td><div class="asset">${icon(r.sym, "crypto", r.flag)}<div><div class="sym">${esc(r.sym)}${r.flag ? ` <span class="badge warn">${r.flag}</span>` : ""}</div><div class="nets-small locs" title="${esc(netsTitle)}">${esc(nets)}</div></div></div></td>
         <td><span class="price ${flash}">${dualUsd(r.price, price)}</span></td>
         <td class="hide-sm">${r.costUsd && r.amount ? `<span class="price">${dualUsd(r.costUsd / r.amount, price)}</span>` : '<span class="muted small">—</span>'}</td>
-        <td><span class="pct ${cls(r.ch)}">${pct(r.ch)}</span></td>
+        <td><span class="pct ${cls(r.chP)}">${pct(r.chP) || '<span class="muted small">—</span>'}</span></td>
         <td class="hide-sm">${qty(r.amount)}</td>
         <td>${dualUsd(r.value)}</td>
         <td class="hide-sm">${totalC && r.value && !r.hidden ? ((r.value / totalC) * 100).toFixed(1).replace(".", ",") + "%" : ""}</td>
@@ -1612,6 +1628,8 @@ function openAsset(sym, isB3 = false) {
       ["Preço (US$)", price(r?.price, "USD")],
       ["Preço (R$)", price(pBrl, "BRL")],
       ["24h", `<span class="${cls(r?.ch)}">${pct(r?.ch) || "—"}</span>`],
+      ["7 dias", `<span class="${cls(changeP(sym, "7d"))}">${pct(changeP(sym, "7d")) || "—"}</span>`],
+      ["30 dias", `<span class="${cls(changeP(sym, "30d"))}">${pct(changeP(sym, "30d")) || "—"}</span>`],
       ["Quantidade", qty(r?.amount)],
       ["Valor", `${money(r?.value, "USD")}<div class="small muted">${money(r?.value != null && rate() ? r.value * rate() : null, "BRL")}</div>`],
       ["Preço médio" + (r?.avgSrc === "binance" ? " (Binance)" : r?.avgSrc === "manual" ? " (manual)" : ""), r?.costUsd && r?.amount ? `${price(r.costUsd / r.amount, "USD")}<div class="sub2">${price(rate() ? (r.costUsd / r.amount) * rate() : null, "BRL")}</div>` : '<span class="muted small">não informado</span>'],
@@ -3001,6 +3019,14 @@ function bind() {
   });
   ["#crypto-table", "#manual-table"].forEach((id) =>
     $(id).addEventListener("click", (e) => {
+      if (e.target.closest("[data-per]")) {
+        e.stopPropagation();
+        const i = PERIODS.findIndex((x) => x[0] === S.chPer);
+        S.chPer = PERIODS[(i + 1) % PERIODS.length][0];
+        store("chPer", S.chPer);
+        renderPainel();
+        return;
+      }
       const h = e.target.closest("th[data-k]");
       if (!h) return;
       e.stopPropagation();
