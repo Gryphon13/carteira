@@ -780,19 +780,19 @@ function setTargetsTabLabel(sym) {
   $("#d-tabs").querySelector('[data-t="metas"]').textContent = n ? `Metas (${n})` : "Metas";
 }
 function tgtRow(t, withSym = false) {
-  const p = curPx(t.symbol), target = Number(t.price_usd), done = tgtDone(t), up = t.direction === "up";
+  const p = curPx(t.symbol), target = Number(t.price_usd), done = tgtDone(t), up = t.direction === "up", buy = t.kind === "buy";
   const r = cryptoRows().find((x) => x.sym === t.symbol);
   const q = t.sell_pct && r ? (r.amount * Number(t.sell_pct)) / 100 : null;
   const prog = p ? Math.max(0, Math.min(1, up ? p / target : target / p)) : 0;
   const dist = p ? target / p - 1 : null;
   const status = done
     ? (t.hit_at ? `<span class="up">✓ atingida em ${new Date(t.hit_at).toLocaleString("pt-BR", { dateStyle: "short", timeStyle: "short" })}${t.hit_price ? ` (${price(Number(t.hit_price), "USD")})` : ""}</span>${t.notified ? ' <span class="muted small">· aviso enviado</span>' : ""}` : '<span class="muted">pausada</span>')
-    : `<span class="muted small">${up ? "falta subir" : "falta cair"}</span> <b>${pctTxt(Math.abs(dist ?? NaN))}</b>`;
+    : `<span class="muted small">${up ? "falta subir" : "falta cair"}</span> <b>${dist == null ? "—" : pctTxt(Math.abs(dist)).replace("+", "")}</b>`;
   return `<div class="tgt ${done ? "done" : ""}">
     <div class="tgt-main">
       ${withSym ? `<button type="button" class="link tgt-sym" data-open="${esc(t.symbol)}">${icon(t.symbol, "crypto")}<b>${esc(t.symbol)}</b></button>` : ""}
-      <div class="tgt-what"><b>${up ? "Vender a" : "Avisar se cair a"} ${price(target, "USD")}</b><span class="muted small"> · ${price(rate() ? target * rate() : null, "BRL")}</span>
-        <div class="small muted">${t.sell_pct ? `vender ${Number(t.sell_pct).toLocaleString("pt-BR")}%${q != null ? ` (${qty(q)} ${esc(t.symbol)} ≈ ${S.hide ? MASK : money(q * target, "USD")})` : ""}` : up ? "meta de venda" : "alerta de queda"}${t.note ? ` · ${esc(t.note)}` : ""}</div>
+      <div class="tgt-what"><span class="tgt-kind ${buy ? "buy" : "sell"}">${buy ? "Compra" : "Venda"}</span> <b>${buy ? (up ? "Comprar se subir a" : "Comprar a") : up ? "Vender a" : "Avisar se cair a"} ${price(target, "USD")}</b><span class="muted small"> · ${price(rate() ? target * rate() : null, "BRL")}</span>
+        <div class="small muted">${buy ? (t.buy_usd ? `investir ${money(Number(t.buy_usd), "USD")} ≈ ${qty(Number(t.buy_usd) / target)} ${esc(t.symbol)}` : "meta de compra") : t.sell_pct ? `vender ${Number(t.sell_pct).toLocaleString("pt-BR")}%${q != null ? ` (${qty(q)} ${esc(t.symbol)} ≈ ${S.hide ? MASK : money(q * target, "USD")})` : ""}` : up ? "meta de venda" : "alerta de queda"}${t.note ? ` · ${esc(t.note)}` : ""}</div>
       </div>
       <div class="tgt-st">${status}<div class="small muted">agora ${price(p, "USD")}</div></div>
       <div class="tgt-btns">${done ? `<button type="button" class="btn small" data-tg-re="${t.id}">Reativar</button>` : ""}<button type="button" class="btn small ghost" data-tg-del="${t.id}" title="Excluir meta">×</button></div>
@@ -807,49 +807,60 @@ function renderAssetTargets(sym) {
   const cbx = S.cb[sym], st = S.settings[sym] || {};
   const avg = st.avg_cost_usd ? Number(st.avg_cost_usd) : cbx && Number(cbx.qty) ? Number(cbx.cost_usd) / Number(cbx.qty) : null;
   const ath = CGM.map[sym]?.ath;
-  const quick = [
-    p && ["+25%", p * 1.25], p && ["+50%", p * 1.5], p && ["2×", p * 2], p && ["3×", p * 3],
-    avg && avg > (p || 0) && ["Preço médio", avg], ath && ath > (p || 0) && ["Máxima histórica", ath],
-  ].filter(Boolean);
+  const buy = S.tgKind === "buy";
+  const quick = (buy
+    ? [p && ["−10%", p * 0.9], p && ["−20%", p * 0.8], p && ["−30%", p * 0.7], p && ["−50%", p * 0.5], avg && p && avg < p && ["Preço médio", avg]]
+    : [p && ["+25%", p * 1.25], p && ["+50%", p * 1.5], p && ["2×", p * 2], p && ["3×", p * 3], avg && avg > (p || 0) && ["Preço médio", avg], ath && ath > (p || 0) && ["Máxima histórica", ath]]
+  ).filter(Boolean);
   const list = targetsOf(sym);
   $("#d-metas").innerHTML = `
-    ${hasNotify() ? "" : '<div class="flagbox warn">Os avisos ainda não estão ligados. Configure o celular ou o e-mail em <b>Cadastros → Avisos das metas de venda</b>; enquanto isso, a meta só aparece aqui no app.</div>'}
+    ${hasNotify() ? "" : '<div class="flagbox warn">Os avisos ainda não estão ligados. Configure o celular ou o e-mail em <b>Cadastros → Avisos das metas de compra e venda</b>; enquanto isso, a meta só aparece aqui no app.</div>'}
     <div class="tgt-list">${list.map((t) => tgtRow(t)).join("") || '<p class="muted">Nenhuma meta para este ativo ainda.</p>'}</div>
     <form id="tg-form" class="form compact">
-      <h3>Nova meta</h3>
+      <div class="tg-head"><h3>Nova meta</h3><div class="seg small" id="tg-kind"><button type="button" data-k="sell" class="${buy ? "" : "active"}">Vender</button><button type="button" data-k="buy" class="${buy ? "active" : ""}">Comprar</button></div></div>
       <div class="row">
-        <label>Preço alvo (US$)<input id="tg-price" type="number" step="any" min="0" required placeholder="${p ? String(+(p * 1.5).toPrecision(5)) : ""}" /></label>
-        <label>Vender (% da posição)<input id="tg-pct" type="number" step="any" min="0" max="100" placeholder="opcional" /></label>
-        <label>Nota<input id="tg-note" maxlength="120" placeholder="Ex.: garantir o custo de volta" /></label>
+        <label>Preço alvo (US$)<input id="tg-price" type="number" step="any" min="0" required placeholder="${p ? String(+(p * (buy ? 0.8 : 1.5)).toPrecision(5)) : ""}" /></label>
+        ${buy
+          ? '<label>Valor a investir (US$)<input id="tg-buy" type="number" step="any" min="0" placeholder="opcional" /></label>'
+          : '<label>Vender (% da posição)<input id="tg-pct" type="number" step="any" min="0" max="100" placeholder="opcional" /></label>'}
+        <label>Nota<input id="tg-note" maxlength="120" placeholder="${buy ? "Ex.: aumentar posição no fundo" : "Ex.: garantir o custo de volta"}" /></label>
       </div>
       ${quick.length ? `<div class="chips tg-quick">${quick.map(([l, v]) => `<button type="button" class="chip-btn" data-tg-px="${v}">${l} · ${price(v, "USD")}</button>`).join("")}</div>` : ""}
       <p class="small muted" id="tg-preview"></p>
       <div class="row-btns"><button class="btn primary" type="submit">Criar meta</button></div>
-      <p class="hint">Acima do preço atual vira <b>meta de venda</b>; abaixo, <b>alerta de queda</b>. O servidor confere os preços a cada 10 minutos (pegando os picos do intervalo) e avisa uma vez; depois você pode reativar.</p>
+      <p class="hint">${buy ? "Compra: normalmente abaixo do preço atual (avisa quando cair até lá); acima, avisa quando subir até lá." : "Venda: acima do preço atual vira <b>meta de venda</b>; abaixo, <b>alerta de queda</b>."} O servidor confere os preços a cada 10 minutos (pegando os picos do intervalo) e avisa uma vez; depois você pode reativar.</p>
     </form>`;
   const prev = () => {
-    const v = Number($("#tg-price").value), k = Number($("#tg-pct").value);
+    const v = Number($("#tg-price").value);
     if (!v || !p) return ($("#tg-preview").textContent = "");
-    const up = v >= p, q = k && r ? (r.amount * k) / 100 : null;
-    $("#tg-preview").innerHTML = `${up ? "Meta de venda" : "Alerta de queda"}: ${pctTxt(v / p - 1)} do preço atual (${price(p, "USD")}).${q != null ? ` Vendendo ${k.toLocaleString("pt-BR")}% = ${qty(q)} ${esc(sym)} ≈ ${money(q * v, "USD")} · ${money(rate() ? q * v * rate() : null, "BRL")}.` : ""}`;
+    const up = v >= p;
+    if (buy) {
+      const b = Number($("#tg-buy").value);
+      $("#tg-preview").innerHTML = `Compra ${up ? "se subir" : "na queda"}: ${pctTxt(v / p - 1)} do preço atual (${price(p, "USD")}).${b ? ` Investindo ${money(b, "USD")} (${money(rate() ? b * rate() : null, "BRL")}) ≈ ${qty(b / v)} ${esc(sym)}.` : ""}`;
+    } else {
+      const k = Number($("#tg-pct").value), q = k && r ? (r.amount * k) / 100 : null;
+      $("#tg-preview").innerHTML = `${up ? "Meta de venda" : "Alerta de queda"}: ${pctTxt(v / p - 1)} do preço atual (${price(p, "USD")}).${q != null ? ` Vendendo ${k.toLocaleString("pt-BR")}% = ${qty(q)} ${esc(sym)} ≈ ${money(q * v, "USD")} · ${money(rate() ? q * v * rate() : null, "BRL")}.` : ""}`;
+    }
   };
   $("#tg-price").oninput = prev;
-  $("#tg-pct").oninput = prev;
+  ($("#tg-pct") || $("#tg-buy")).oninput = prev;
   $("#d-metas").onclick = async (e) => {
     const qb = e.target.closest("[data-tg-px]");
     if (qb) { $("#tg-price").value = +Number(qb.dataset.tgPx).toPrecision(6); prev(); return; }
+    const kb = e.target.closest("#tg-kind [data-k]");
+    if (kb) { S.tgKind = kb.dataset.k; renderAssetTargets(sym); return; }
     if (await targetAction(e)) renderAssetTargets(sym);
   };
   $("#tg-form").onsubmit = async (e) => {
     e.preventDefault();
-    const v = Number($("#tg-price").value), k = Number($("#tg-pct").value) || null;
+    const v = Number($("#tg-price").value);
     if (!(v > 0)) return;
     const now = curPx(sym);
-    const row = { user_id: S.user.id, symbol: sym, price_usd: v, sell_pct: k, note: $("#tg-note").value.trim() || null, direction: now && v < now ? "down" : "up" };
+    const row = { user_id: S.user.id, symbol: sym, kind: buy ? "buy" : "sell", price_usd: v, sell_pct: buy ? null : Number($("#tg-pct").value) || null, buy_usd: buy ? Number($("#tg-buy").value) || null : null, note: $("#tg-note").value.trim() || null, direction: now && v < now ? "down" : "up" };
     const { data, error } = await sb.from("sell_targets").insert(row).select().single();
     if (error) return toast(`✗ Não consegui salvar a meta: ${esc(error.message)}`, "err", 12000);
     S.targets.push(data);
-    toast(`✓ Meta criada: ${esc(sym)} a ${price(v, "USD")}${hasNotify() ? "" : " (ligue os avisos em Cadastros)"}`);
+    toast(`✓ Meta de ${buy ? "compra" : "venda"} criada: ${esc(sym)} a ${price(v, "USD")}${hasNotify() ? "" : " (ligue os avisos em Cadastros)"}`);
     renderAssetTargets(sym);
     setTargetsTabLabel(sym);
     renderTargetsCard();
@@ -880,14 +891,19 @@ function renderTargetsCard() {
   if (!card) return;
   const recent = Date.now() - 30 * 86400e3;
   const list = targetsOf().filter((t) => !tgtDone(t) || (t.hit_at && new Date(t.hit_at).getTime() > recent));
-  card.classList.toggle("hidden", !list.length);
-  if (!list.length) return;
+  card.classList.remove("hidden");
+  const add = `<form id="tg-any" class="tg-any"><input id="tg-any-sym" placeholder="Ativo (ex.: BTC, SOL)" autocomplete="off" spellcheck="false" maxlength="15" /><button class="btn small" type="submit">+ Nova meta</button></form>`;
+  if (!list.length) {
+    $("#targets-sum").textContent = hasNotify() ? "" : "avisos desligados (Cadastros)";
+    $("#targets-list").innerHTML = `<p class="muted small">Nenhuma meta ainda. Crie pela aba <b>Metas</b> de qualquer ativo ou digite um ativo aqui (vale também para moedas que você ainda não tem, para metas de compra).</p>${add}`;
+    return;
+  }
   // as ativas mais perto de bater primeiro
   const near = (t) => { const p = curPx(t.symbol); return p ? Math.abs(Number(t.price_usd) / p - 1) : 9; };
   list.sort((a, b) => tgtDone(a) - tgtDone(b) || near(a) - near(b));
   const act = list.filter((t) => !tgtDone(t)).length;
   $("#targets-sum").textContent = `${act} ativa(s)${hasNotify() ? "" : " · avisos desligados (Cadastros)"}`;
-  $("#targets-list").innerHTML = `<div class="tgt-list">${list.map((t) => tgtRow(t, true)).join("")}</div>`;
+  $("#targets-list").innerHTML = `<div class="tgt-list">${list.map((t) => tgtRow(t, true)).join("")}</div>${add}`;
 }
 // com o app aberto: avisa na hora (o servidor manda o celular/e-mail na próxima conferência)
 function checkTargetsLive() {
@@ -902,7 +918,8 @@ function checkTargetsLive() {
     if (!hit) continue;
     S.tgtToasted.add(t.id);
     any = true;
-    toast(`🎯 <b>${esc(t.symbol)}</b> ${t.direction === "up" ? "chegou a" : "caiu para"} ${price(Number(t.price_usd), "USD")}${t.sell_pct ? ` — sua meta: vender ${Number(t.sell_pct).toLocaleString("pt-BR")}%` : ""}`, "info", 0);
+    const buy = t.kind === "buy";
+    toast(`${buy ? "🛒" : "🎯"} <b>${esc(t.symbol)}</b> ${t.direction === "up" ? "chegou a" : "caiu para"} ${price(Number(t.price_usd), "USD")}${buy ? (t.buy_usd ? ` — sua meta: comprar ${money(Number(t.buy_usd), "USD")}` : " — meta de compra") : t.sell_pct ? ` — sua meta: vender ${Number(t.sell_pct).toLocaleString("pt-BR")}%` : ""}`, "info", 0);
   }
   if (any) renderTargetsCard();
 }
@@ -2931,6 +2948,15 @@ function bind() {
     await afterOpsChange(o.asset_id);
   });
   $("#d-close").addEventListener("click", closeModal);
+  $("#targets-list").addEventListener("submit", (e) => {
+    if (e.target.id !== "tg-any") return;
+    e.preventDefault();
+    const sym = $("#tg-any-sym").value.trim().toUpperCase().replace(/[^A-Z0-9]/g, "");
+    if (!sym) return;
+    S.tgKind = cryptoRows().some((r) => r.sym === sym) ? S.tgKind : "buy";
+    openAsset(sym);
+    showDetailTab("metas");
+  });
   $("#targets-list").addEventListener("click", async (e) => {
     const o = e.target.closest("[data-open]");
     if (o) return openAsset(o.dataset.open);

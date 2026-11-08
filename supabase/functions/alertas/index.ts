@@ -1,4 +1,4 @@
-// Metas de venda: confere os preços a cada 10 minutos (pg_cron) e avisa no celular pelo ntfy.
+// Metas de compra e venda: confere os preços a cada 10 minutos (pg_cron) e avisa no celular pelo ntfy.
 // Também atende a página (usuário logado) para enviar uma notificação de teste.
 import { createClient } from "npm:@supabase/supabase-js@2.58.0";
 
@@ -96,12 +96,12 @@ async function check() {
     const hit = t.direction === "up" ? p.hi >= target : p.lo <= target;
     if (!hit) continue;
     const verb = t.direction === "up" ? "chegou a" : "caiu para";
-    const title = `🎯 ${t.symbol} ${verb} ${fmtUsd(target)}`;
-    const lines = [
-      `Preço agora: ${fmtUsd(p.last)}${brl ? ` (${fmtBrl(p.last * brl)})` : ""}.`,
-      t.sell_pct ? `Sua meta: vender ${Number(t.sell_pct).toLocaleString("pt-BR")}% da posição.` : t.direction === "up" ? "Meta de venda atingida." : "Alerta de queda atingido.",
-      t.note ? `Nota: ${t.note}` : "",
-    ].filter(Boolean);
+    const buy = t.kind === "buy";
+    const title = `${buy ? "🛒" : "🎯"} ${t.symbol} ${verb} ${fmtUsd(target)}`;
+    const what = buy
+      ? (t.buy_usd ? `Sua meta: comprar ${fmtUsd(Number(t.buy_usd))}${brl ? ` (${fmtBrl(Number(t.buy_usd) * brl)})` : ""} ≈ ${(Number(t.buy_usd) / p.last).toLocaleString("pt-BR", { maximumSignificantDigits: 6 })} ${t.symbol}.` : "Meta de compra atingida.")
+      : t.sell_pct ? `Sua meta: vender ${Number(t.sell_pct).toLocaleString("pt-BR")}% da posição.` : t.direction === "up" ? "Meta de venda atingida." : "Alerta de queda atingido.";
+    const lines = [`Preço agora: ${fmtUsd(p.last)}${brl ? ` (${fmtBrl(p.last * brl)})` : ""}.`, what, t.note ? `Nota: ${t.note}` : ""].filter(Boolean);
     const res = await notify(prefOf.get(t.user_id), title, lines.join("\n"), { tags: [t.direction === "up" ? "chart_with_upwards_trend" : "chart_with_downwards_trend"], priority: 4 });
     const notified = res.ok.length > 0, err = res.errs.join(" | ");
     await admin.from("sell_targets").update({ hit_at: new Date().toISOString(), hit_price: p.last, active: false, notified }).eq("id", t.id);
@@ -131,7 +131,7 @@ Deno.serve(async (req) => {
     if (body.teste) {
       const { data: pf } = await admin.from("user_prefs").select("ntfy_topic, notify_email").eq("user_id", u.user.id).maybeSingle();
       if (!pf?.ntfy_topic && !pf?.notify_email) return json({ erro: "Configure o celular ou o e-mail primeiro." }, 400);
-      const res = await notify(pf, "✅ Carteira: avisos funcionando", "Você vai receber aqui quando um ativo chegar na meta de venda.", { tags: ["bell"] });
+      const res = await notify(pf, "✅ Carteira: avisos funcionando", "Você vai receber aqui quando um ativo chegar numa meta de compra ou de venda.", { tags: ["bell"] });
       return json({ ok: res.errs.length === 0, canais: res.ok, erros: res.errs });
     }
     return json({ erro: "nada a fazer" }, 400);
