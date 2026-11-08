@@ -373,3 +373,4 @@ label.inline select { width: auto; }
 .toast .t-body { flex: 1; min-width: 0; overflow-wrap: anywhere; }
 .toast .t-x { background: none; border: 0; color: var(--muted); font-size: 18px; line-height: 1; cursor: pointer; padding: 0 2px; }
 @keyframes tin { from { opacity: 0; transform: translateY(8px); } }
+.mov-src { margin: 4px 0 12px; }

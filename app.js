@@ -685,7 +685,28 @@ const brlAt = (ms) => { const k = kLoad("USDTBRL"); return (k && !k.none && clos
 const dualAt = (usd, ms, fmt = price) => usd == null || !isFinite(usd) ? "—" : `${fmt(usd, "USD")}<div class="sub2">${fmt(brlAt(ms) ? usd * brlAt(ms) : null, "BRL")}</div>`;
 const movsFetching = new Set();
 function renderAssetMovs(sym) {
-  const list = assetMovs(sym);
+  const all = assetMovs(sym);
+  const srcOf = (x) => x.t.source || "—";
+  // filtro por origem (corretora/carteira); ao abrir o ativo, herda o filtro de locais do painel
+  if (S.movSrcSym !== sym) {
+    S.movSrcSym = sym;
+    const has = new Set(all.map(srcOf));
+    S.movSrc = (S.filters.locals || []).filter((l) => has.has(l));
+  }
+  const srcCount = new Map();
+  for (const x of all) srcCount.set(srcOf(x), (srcCount.get(srcOf(x)) || 0) + 1);
+  S.movSrc = S.movSrc.filter((l) => srcCount.has(l));
+  const list = S.movSrc.length ? all.filter((x) => S.movSrc.includes(srcOf(x))) : all;
+  const srcChips = srcCount.size > 1
+    ? `<div class="chips mov-src"><button type="button" class="chip-btn ${S.movSrc.length ? "" : "on"}" data-msrc="">Todas (${all.length})</button>${[...srcCount].sort((a, b) => b[1] - a[1]).map(([l, n]) => `<button type="button" class="chip-btn ${S.movSrc.includes(l) ? "on" : ""}" data-msrc="${esc(l)}">${esc(l)} (${n})</button>`).join("")}</div>`
+    : "";
+  $("#d-movs").onclick = (e) => {
+    const b = e.target.closest("[data-msrc]");
+    if (!b) return;
+    const l = b.dataset.msrc;
+    S.movSrc = !l ? [] : S.movSrc.includes(l) ? S.movSrc.filter((x) => x !== l) : [...S.movSrc, l];
+    renderAssetMovs(sym);
+  };
   const dname = { in: "Entrada", out: "Saída", self: "Interna", trade: "Troca", buy: "Compra", sell: "Venda" };
   const sum = (d) => list.filter((x) => x.dir === d).reduce((s, x) => s + (x.amount || 0), 0);
   const cnt = (d) => list.filter((x) => x.dir === d).length;
@@ -708,8 +729,8 @@ function renderAssetMovs(sym) {
   }
   const tot = (d) => list.filter((x) => x.dir === d && x.usdTotal != null).reduce((a, x) => [a[0] + x.usdTotal, a[1] + x.usdTotal * (brlAt(x.ms) || 0)], [0, 0]);
   const [buyU, buyB] = tot("buy"), [sellU, sellB] = tot("sell");
-  $("#d-tabs").querySelector('[data-t="movs"]').textContent = `Movimentações (${list.length})`;
-  $("#d-movs").innerHTML = `
+  $("#d-tabs").querySelector('[data-t="movs"]').textContent = `Movimentações (${all.length})`;
+  $("#d-movs").innerHTML = `${srcChips}
     <div class="d-sum">
       <div class="stat"><div class="muted small">Comprado (${cnt("buy")})</div><div class="v up">${qty(sum("buy"))}</div><div class="sub2">${money(buyU, "USD")} · ${money(buyB, "BRL")}</div></div>
       <div class="stat"><div class="muted small">Vendido / usado (${cnt("sell")})</div><div class="v down">${qty(sum("sell"))}</div><div class="sub2">${money(sellU, "USD")} · ${money(sellB, "BRL")}</div></div>
@@ -727,7 +748,7 @@ function renderAssetMovs(sym) {
         <td class="hide-sm">${S.hide ? MASK : dualAt(x.usdTotal, x.ms, money)}</td>
         <td class="hide-sm det"><span class="nets-small cp" title="${esc(x.t.counterparty || "")}">${esc(x.t.source)} · ${esc(NET[x.t.network] || x.t.network)}${(x.swapped ? x.desc : x.t.counterparty) ? " · " + esc(shortAddr(x.swapped ? x.desc : x.t.counterparty)) : ""}</span></td>
         <td>${x.t.url ? `<a href="${esc(x.t.url)}" target="_blank" rel="noopener">ver ↗</a>` : ""}</td>
-      </tr>`).join("") || '<tr><td colspan="7" class="empty">Nenhuma movimentação registrada para este ativo.</td></tr>'}
+      </tr>`).join("") || (all.length ? '<tr><td colspan="7" class="empty">Nenhuma movimentação nas origens escolhidas.</td></tr>' : '<tr><td colspan="7" class="empty">Nenhuma movimentação registrada para este ativo.</td></tr>')}
     </table></div>`;
 }
 function showDetailTab(tab) {
@@ -1315,6 +1336,7 @@ function openAsset(sym, isB3 = false) {
   $("#d-tabs").querySelector('[data-t="info"]').classList.toggle("hidden", isB3);
   $("#d-tabs").querySelector('[data-t="evo"]').classList.add("hidden");
   $("#d-evo").innerHTML = "";
+  S.movSrcSym = null;
   if (!isB3) renderAssetMovs(sym);
   showDetailTab("chart");
   $("#modal").classList.remove("hidden");
