@@ -397,3 +397,10 @@ label.inline select { width: auto; }
 .tg-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
 .tg-any { display: flex; gap: 8px; margin-top: 4px; }
 .tg-any input { max-width: 200px; }
+.tgt-kind.rsi { background: color-mix(in srgb, var(--accent) 18%, transparent); color: var(--accent); }
+.tg-segs { display: flex; gap: 8px; flex-wrap: wrap; }
+.rsi-now { display: flex; flex-wrap: wrap; gap: 6px 14px; align-items: baseline; margin: 2px 0 12px; }
+.rsi-cell b { font-variant-numeric: tabular-nums; }
+.tgt-bar.rsi { position: relative; overflow: visible; }
+.tgt-bar.rsi i { background: var(--muted); }
+.tgt-bar.rsi s { position: absolute; top: -3px; width: 2px; height: 12px; background: var(--accent); border-radius: 2px; text-decoration: none; }

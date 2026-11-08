@@ -780,26 +780,76 @@ function setTargetsTabLabel(sym) {
   $("#d-tabs").querySelector('[data-t="metas"]').textContent = n ? `Metas (${n})` : "Metas";
 }
 function tgtRow(t, withSym = false) {
-  const p = curPx(t.symbol), target = Number(t.price_usd), done = tgtDone(t), up = t.direction === "up", buy = t.kind === "buy";
+  const done = tgtDone(t), up = t.direction === "up", buy = t.kind === "buy", isRsi = t.trigger === "rsi";
+  const p = curPx(t.symbol), target = Number(t.price_usd);
   const r = cryptoRows().find((x) => x.sym === t.symbol);
   const q = t.sell_pct && r ? (r.amount * Number(t.sell_pct)) / 100 : null;
-  const prog = p ? Math.max(0, Math.min(1, up ? p / target : target / p)) : 0;
-  const dist = p ? target / p - 1 : null;
-  const status = done
-    ? (t.hit_at ? `<span class="up">✓ atingida em ${new Date(t.hit_at).toLocaleString("pt-BR", { dateStyle: "short", timeStyle: "short" })}${t.hit_price ? ` (${price(Number(t.hit_price), "USD")})` : ""}</span>${t.notified ? ' <span class="muted small">· aviso enviado</span>' : ""}` : '<span class="muted">pausada</span>')
-    : `<span class="muted small">${up ? "falta subir" : "falta cair"}</span> <b>${dist == null ? "—" : pctTxt(Math.abs(dist)).replace("+", "")}</b>`;
+  const refPx = isRsi ? p : target;
+  const amount = buy
+    ? (t.buy_usd ? `investir ${money(Number(t.buy_usd), "USD")}${refPx ? ` ≈ ${qty(Number(t.buy_usd) / refPx)} ${esc(t.symbol)}` : ""}` : "meta de compra")
+    : t.sell_pct ? `vender ${Number(t.sell_pct).toLocaleString("pt-BR")}%${q != null && refPx ? ` (${qty(q)} ${esc(t.symbol)} ≈ ${S.hide ? MASK : money(q * refPx, "USD")})` : ""}` : isRsi ? "alerta de RSI" : up ? "meta de venda" : "alerta de queda";
+  let what, status, bar = "";
+  if (isRsi) {
+    const tfl = (RSI_LABEL[t.rsi_tf] || t.rsi_tf).toLowerCase(), lvl = Number(t.rsi_level);
+    const cur = rsiMem.get(`${t.symbol}|${t.rsi_tf}`)?.v;
+    if (!done && cur === undefined) rsiNow(t.symbol, t.rsi_tf).then(() => { renderTargetsCard(); if (S.detail?.sym === t.symbol && !$("#d-metas").classList.contains("hidden")) renderAssetTargets(t.symbol); });
+    what = `<b>${buy ? "Comprar" : "Vender"} quando o RSI ${tfl} ficar ${up ? "acima" : "abaixo"} de ${lvl.toLocaleString("pt-BR")}</b>`;
+    status = done
+      ? (t.hit_at ? `<span class="up">✓ atingida em ${new Date(t.hit_at).toLocaleString("pt-BR", { dateStyle: "short", timeStyle: "short" })}${t.hit_rsi ? ` (RSI ${rsiFmt(Number(t.hit_rsi))}${t.hit_price ? ` · ${price(Number(t.hit_price), "USD")}` : ""})` : ""}</span>${t.notified ? ' <span class="muted small">· aviso enviado</span>' : ""}` : '<span class="muted">pausada</span>')
+      : `<span class="muted small">RSI ${tfl} agora</span> <b class="${rsiCls(cur)}">${rsiFmt(cur)}</b>`;
+    if (!done && cur != null) bar = `<div class="tgt-bar rsi"><i style="width:${Math.max(0, Math.min(100, cur)).toFixed(1)}%"></i><s style="left:${lvl}%"></s></div>`;
+  } else {
+    const prog = p ? Math.max(0, Math.min(1, up ? p / target : target / p)) : 0;
+    const dist = p ? target / p - 1 : null;
+    what = `<b>${buy ? (up ? "Comprar se subir a" : "Comprar a") : up ? "Vender a" : "Avisar se cair a"} ${price(target, "USD")}</b><span class="muted small"> · ${price(rate() ? target * rate() : null, "BRL")}</span>`;
+    status = done
+      ? (t.hit_at ? `<span class="up">✓ atingida em ${new Date(t.hit_at).toLocaleString("pt-BR", { dateStyle: "short", timeStyle: "short" })}${t.hit_price ? ` (${price(Number(t.hit_price), "USD")})` : ""}</span>${t.notified ? ' <span class="muted small">· aviso enviado</span>' : ""}` : '<span class="muted">pausada</span>')
+      : `<span class="muted small">${up ? "falta subir" : "falta cair"}</span> <b>${dist == null ? "—" : pctTxt(Math.abs(dist)).replace("+", "")}</b>`;
+    if (!done) bar = `<div class="tgt-bar"><i style="width:${(prog * 100).toFixed(1)}%"></i></div>`;
+  }
   return `<div class="tgt ${done ? "done" : ""}">
     <div class="tgt-main">
       ${withSym ? `<button type="button" class="link tgt-sym" data-open="${esc(t.symbol)}">${icon(t.symbol, "crypto")}<b>${esc(t.symbol)}</b></button>` : ""}
-      <div class="tgt-what"><span class="tgt-kind ${buy ? "buy" : "sell"}">${buy ? "Compra" : "Venda"}</span> <b>${buy ? (up ? "Comprar se subir a" : "Comprar a") : up ? "Vender a" : "Avisar se cair a"} ${price(target, "USD")}</b><span class="muted small"> · ${price(rate() ? target * rate() : null, "BRL")}</span>
-        <div class="small muted">${buy ? (t.buy_usd ? `investir ${money(Number(t.buy_usd), "USD")} ≈ ${qty(Number(t.buy_usd) / target)} ${esc(t.symbol)}` : "meta de compra") : t.sell_pct ? `vender ${Number(t.sell_pct).toLocaleString("pt-BR")}%${q != null ? ` (${qty(q)} ${esc(t.symbol)} ≈ ${S.hide ? MASK : money(q * target, "USD")})` : ""}` : up ? "meta de venda" : "alerta de queda"}${t.note ? ` · ${esc(t.note)}` : ""}</div>
+      <div class="tgt-what"><span class="tgt-kind ${buy ? "buy" : "sell"}">${buy ? "Compra" : "Venda"}</span>${isRsi ? '<span class="tgt-kind rsi">RSI</span>' : ""} ${what}
+        <div class="small muted">${amount}${t.note ? ` · ${esc(t.note)}` : ""}</div>
       </div>
-      <div class="tgt-st">${status}<div class="small muted">agora ${price(p, "USD")}</div></div>
+      <div class="tgt-st">${status}<div class="small muted">preço ${price(p, "USD")}</div></div>
       <div class="tgt-btns">${done ? `<button type="button" class="btn small" data-tg-re="${t.id}">Reativar</button>` : ""}<button type="button" class="btn small ghost" data-tg-del="${t.id}" title="Excluir meta">×</button></div>
     </div>
-    ${done ? "" : `<div class="tgt-bar"><i style="width:${(prog * 100).toFixed(1)}%"></i></div>`}
+    ${bar}
   </div>`;
 }
+// RSI (Wilder, 14) calculado no navegador com as velas fechadas da Binance — o mesmo do TradingView
+const RSI_TF = [["15m", "15 min"], ["1h", "1 h"], ["4h", "4 h"], ["1d", "Diário"], ["1w", "Semanal"], ["1M", "Mensal"]];
+const RSI_LABEL = Object.fromEntries(RSI_TF);
+function wilderRsi(c, n = 14) {
+  if (c.length < n + 1) return null;
+  let g = 0, l = 0;
+  for (let i = 1; i <= n; i++) { const d = c[i] - c[i - 1]; g += Math.max(d, 0); l += Math.max(-d, 0); }
+  g /= n; l /= n;
+  for (let i = n + 1; i < c.length; i++) { const d = c[i] - c[i - 1]; g = (g * (n - 1) + Math.max(d, 0)) / n; l = (l * (n - 1) + Math.max(-d, 0)) / n; }
+  return l === 0 ? 100 : 100 - 100 / (1 + g / l);
+}
+const rsiMem = new Map(); // "SYM|tf" -> { v, at }
+async function rsiNow(sym, tf) {
+  const key = `${sym}|${tf}`, m = rsiMem.get(key);
+  if (m && Date.now() - m.at < 5 * 60e3) return m.v;
+  let v = null;
+  for (const q of ["USDT", "FDUSD", "USDC"]) {
+    try {
+      const r = await fetch(`${KLINES}?symbol=${sym}${q}&interval=${tf}&limit=500`);
+      if (!r.ok) continue;
+      const k = await r.json();
+      if (!k.length) continue;
+      v = wilderRsi(k.filter((x) => x[6] < Date.now()).map((x) => Number(x[4])));
+      break;
+    } catch { /* próximo par */ }
+  }
+  rsiMem.set(key, { v, at: Date.now() });
+  return v;
+}
+const rsiFmt = (v) => (v == null ? "—" : v.toFixed(1).replace(".", ","));
+const rsiCls = (v) => (v == null ? "" : v <= 30 ? "up" : v >= 70 ? "down" : "");
 function renderAssetTargets(sym) {
   if (!sym) return;
   const p = curPx(sym);
@@ -808,59 +858,107 @@ function renderAssetTargets(sym) {
   const avg = st.avg_cost_usd ? Number(st.avg_cost_usd) : cbx && Number(cbx.qty) ? Number(cbx.cost_usd) / Number(cbx.qty) : null;
   const ath = CGM.map[sym]?.ath;
   const buy = S.tgKind === "buy";
+  const isRsi = S.tgTrig === "rsi";
   const quick = (buy
     ? [p && ["−10%", p * 0.9], p && ["−20%", p * 0.8], p && ["−30%", p * 0.7], p && ["−50%", p * 0.5], avg && p && avg < p && ["Preço médio", avg]]
     : [p && ["+25%", p * 1.25], p && ["+50%", p * 1.5], p && ["2×", p * 2], p && ["3×", p * 3], avg && avg > (p || 0) && ["Preço médio", avg], ath && ath > (p || 0) && ["Máxima histórica", ath]]
   ).filter(Boolean);
+  const defLvl = buy ? 30 : 70;
   const list = targetsOf(sym);
+  const amountField = buy
+    ? '<label>Valor a investir (US$)<input id="tg-buy" type="number" step="any" min="0" placeholder="opcional" /></label>'
+    : '<label>Vender (% da posição)<input id="tg-pct" type="number" step="any" min="0" max="100" placeholder="opcional" /></label>';
   $("#d-metas").innerHTML = `
     ${hasNotify() ? "" : '<div class="flagbox warn">Os avisos ainda não estão ligados. Configure o celular ou o e-mail em <b>Cadastros → Avisos das metas de compra e venda</b>; enquanto isso, a meta só aparece aqui no app.</div>'}
+    <div class="rsi-now"><span class="muted small">RSI(14) agora:</span> ${RSI_TF.map(([tf, l]) => `<span class="rsi-cell" data-rsi-tf="${tf}"><span class="muted small">${l}</span> <b>…</b></span>`).join("")}</div>
     <div class="tgt-list">${list.map((t) => tgtRow(t)).join("") || '<p class="muted">Nenhuma meta para este ativo ainda.</p>'}</div>
     <form id="tg-form" class="form compact">
-      <div class="tg-head"><h3>Nova meta</h3><div class="seg small" id="tg-kind"><button type="button" data-k="sell" class="${buy ? "" : "active"}">Vender</button><button type="button" data-k="buy" class="${buy ? "active" : ""}">Comprar</button></div></div>
+      <div class="tg-head"><h3>Nova meta</h3>
+        <div class="tg-segs">
+          <div class="seg small" id="tg-kind"><button type="button" data-k="sell" class="${buy ? "" : "active"}">Vender</button><button type="button" data-k="buy" class="${buy ? "active" : ""}">Comprar</button></div>
+          <div class="seg small" id="tg-trig"><button type="button" data-g="price" class="${isRsi ? "" : "active"}">Por preço</button><button type="button" data-g="rsi" class="${isRsi ? "active" : ""}">Por RSI</button></div>
+        </div>
+      </div>
+      ${isRsi ? `
+      <div class="row">
+        <label>Tempo gráfico<select id="tg-tf">${RSI_TF.map(([tf, l]) => `<option value="${tf}" ${tf === (S.tgTf || "1d") ? "selected" : ""}>${l}</option>`).join("")}</select></label>
+        <label>Quando o RSI ficar<select id="tg-cond"><option value="down" ${buy ? "selected" : ""}>abaixo de</option><option value="up" ${buy ? "" : "selected"}>acima de</option></select></label>
+        <label>Nível<input id="tg-lvl" type="number" step="any" min="1" max="99" required value="${defLvl}" /></label>
+      </div>
+      <div class="row">${amountField}<label>Nota<input id="tg-note" maxlength="120" placeholder="${buy ? "Ex.: sobrevendido no diário" : "Ex.: sobrecomprado no semanal"}" /></label></div>
+      <div class="chips tg-quick">${[20, 25, 30].map((v) => `<button type="button" class="chip-btn" data-tg-lvl="${v}" data-tg-c="down">abaixo de ${v}</button>`).join("")}${[70, 75, 80].map((v) => `<button type="button" class="chip-btn" data-tg-lvl="${v}" data-tg-c="up">acima de ${v}</button>`).join("")}</div>`
+      : `
       <div class="row">
         <label>Preço alvo (US$)<input id="tg-price" type="number" step="any" min="0" required placeholder="${p ? String(+(p * (buy ? 0.8 : 1.5)).toPrecision(5)) : ""}" /></label>
-        ${buy
-          ? '<label>Valor a investir (US$)<input id="tg-buy" type="number" step="any" min="0" placeholder="opcional" /></label>'
-          : '<label>Vender (% da posição)<input id="tg-pct" type="number" step="any" min="0" max="100" placeholder="opcional" /></label>'}
+        ${amountField}
         <label>Nota<input id="tg-note" maxlength="120" placeholder="${buy ? "Ex.: aumentar posição no fundo" : "Ex.: garantir o custo de volta"}" /></label>
       </div>
-      ${quick.length ? `<div class="chips tg-quick">${quick.map(([l, v]) => `<button type="button" class="chip-btn" data-tg-px="${v}">${l} · ${price(v, "USD")}</button>`).join("")}</div>` : ""}
+      ${quick.length ? `<div class="chips tg-quick">${quick.map(([l, v]) => `<button type="button" class="chip-btn" data-tg-px="${v}">${l} · ${price(v, "USD")}</button>`).join("")}</div>` : ""}`}
       <p class="small muted" id="tg-preview"></p>
       <div class="row-btns"><button class="btn primary" type="submit">Criar meta</button></div>
-      <p class="hint">${buy ? "Compra: normalmente abaixo do preço atual (avisa quando cair até lá); acima, avisa quando subir até lá." : "Venda: acima do preço atual vira <b>meta de venda</b>; abaixo, <b>alerta de queda</b>."} O servidor confere os preços a cada 10 minutos (pegando os picos do intervalo) e avisa uma vez; depois você pode reativar.</p>
+      <p class="hint">${isRsi
+        ? "RSI de 14 períodos, igual ao padrão do TradingView no par da Binance (ex.: BINANCE:BTCUSDT), calculado só com velas já fechadas — o diário fecha às 21h (horário de Brasília). Abaixo de 30 costuma ser lido como <b>sobrevendido</b> e acima de 70 como <b>sobrecomprado</b>. Só funciona para moedas negociadas na Binance."
+        : buy ? "Compra: normalmente abaixo do preço atual (avisa quando cair até lá); acima, avisa quando subir até lá." : "Venda: acima do preço atual vira <b>meta de venda</b>; abaixo, <b>alerta de queda</b>."} O servidor confere a cada 10 minutos e avisa uma vez; depois você pode reativar.</p>
     </form>`;
+  // RSI atual em todos os tempos gráficos
+  for (const [tf] of RSI_TF) rsiNow(sym, tf).then((v) => {
+    const el = $(`#d-metas [data-rsi-tf="${tf}"] b`);
+    if (el) { el.textContent = rsiFmt(v); el.className = rsiCls(v); }
+    if (isRsi && tf === $("#tg-tf")?.value) prev();
+  });
   const prev = () => {
-    const v = Number($("#tg-price").value);
-    if (!v || !p) return ($("#tg-preview").textContent = "");
-    const up = v >= p;
-    if (buy) {
-      const b = Number($("#tg-buy").value);
-      $("#tg-preview").innerHTML = `Compra ${up ? "se subir" : "na queda"}: ${pctTxt(v / p - 1)} do preço atual (${price(p, "USD")}).${b ? ` Investindo ${money(b, "USD")} (${money(rate() ? b * rate() : null, "BRL")}) ≈ ${qty(b / v)} ${esc(sym)}.` : ""}`;
-    } else {
-      const k = Number($("#tg-pct").value), q = k && r ? (r.amount * k) / 100 : null;
-      $("#tg-preview").innerHTML = `${up ? "Meta de venda" : "Alerta de queda"}: ${pctTxt(v / p - 1)} do preço atual (${price(p, "USD")}).${q != null ? ` Vendendo ${k.toLocaleString("pt-BR")}% = ${qty(q)} ${esc(sym)} ≈ ${money(q * v, "USD")} · ${money(rate() ? q * v * rate() : null, "BRL")}.` : ""}`;
+    const out = $("#tg-preview");
+    if (!out) return;
+    const b = buy ? Number($("#tg-buy")?.value) : 0, k = !buy ? Number($("#tg-pct")?.value) : 0;
+    const q = k && r ? (r.amount * k) / 100 : null;
+    const amt = buy ? (b ? ` Investindo ${money(b, "USD")} (${money(rate() ? b * rate() : null, "BRL")})${p ? ` ≈ ${qty(b / p)} ${esc(sym)} no preço de hoje` : ""}.` : "") : q != null ? ` Vendendo ${k.toLocaleString("pt-BR")}% = ${qty(q)} ${esc(sym)}${p ? ` ≈ ${money(q * p, "USD")} no preço de hoje` : ""}.` : "";
+    if (isRsi) {
+      const tf = $("#tg-tf").value, lvl = Number($("#tg-lvl").value), cond = $("#tg-cond").value;
+      const cur = rsiMem.get(`${sym}|${tf}`)?.v;
+      const already = cur != null && lvl && (cond === "up" ? cur >= lvl : cur <= lvl);
+      out.innerHTML = `Avisa quando o RSI ${RSI_LABEL[tf].toLowerCase()} ficar ${cond === "up" ? "acima" : "abaixo"} de ${lvl || "—"}. RSI ${RSI_LABEL[tf].toLowerCase()} agora: <b>${rsiFmt(cur)}</b>.${already ? ' <span class="down">Já está nessa condição: o aviso sai na próxima conferência.</span>' : ""}${amt}`;
+      return;
     }
+    const v = Number($("#tg-price").value);
+    if (!v || !p) return (out.textContent = "");
+    const up = v >= p;
+    if (buy) out.innerHTML = `Compra ${up ? "se subir" : "na queda"}: ${pctTxt(v / p - 1)} do preço atual (${price(p, "USD")}).${b ? ` Investindo ${money(b, "USD")} (${money(rate() ? b * rate() : null, "BRL")}) ≈ ${qty(b / v)} ${esc(sym)}.` : ""}`;
+    else out.innerHTML = `${up ? "Meta de venda" : "Alerta de queda"}: ${pctTxt(v / p - 1)} do preço atual (${price(p, "USD")}).${q != null ? ` Vendendo ${k.toLocaleString("pt-BR")}% = ${qty(q)} ${esc(sym)} ≈ ${money(q * v, "USD")} · ${money(rate() ? q * v * rate() : null, "BRL")}.` : ""}`;
   };
-  $("#tg-price").oninput = prev;
-  ($("#tg-pct") || $("#tg-buy")).oninput = prev;
+  $("#tg-form").oninput = (e) => { if (e.target.id === "tg-tf") S.tgTf = e.target.value; prev(); };
+  $("#tg-form").onchange = prev;
+  prev();
   $("#d-metas").onclick = async (e) => {
     const qb = e.target.closest("[data-tg-px]");
     if (qb) { $("#tg-price").value = +Number(qb.dataset.tgPx).toPrecision(6); prev(); return; }
+    const lb = e.target.closest("[data-tg-lvl]");
+    if (lb) { $("#tg-lvl").value = lb.dataset.tgLvl; $("#tg-cond").value = lb.dataset.tgC; prev(); return; }
     const kb = e.target.closest("#tg-kind [data-k]");
     if (kb) { S.tgKind = kb.dataset.k; renderAssetTargets(sym); return; }
+    const gb = e.target.closest("#tg-trig [data-g]");
+    if (gb) { S.tgTrig = gb.dataset.g; renderAssetTargets(sym); return; }
     if (await targetAction(e)) renderAssetTargets(sym);
   };
   $("#tg-form").onsubmit = async (e) => {
     e.preventDefault();
-    const v = Number($("#tg-price").value);
-    if (!(v > 0)) return;
-    const now = curPx(sym);
-    const row = { user_id: S.user.id, symbol: sym, kind: buy ? "buy" : "sell", price_usd: v, sell_pct: buy ? null : Number($("#tg-pct").value) || null, buy_usd: buy ? Number($("#tg-buy").value) || null : null, note: $("#tg-note").value.trim() || null, direction: now && v < now ? "down" : "up" };
+    const base = { user_id: S.user.id, symbol: sym, kind: buy ? "buy" : "sell", sell_pct: buy ? null : Number($("#tg-pct").value) || null, buy_usd: buy ? Number($("#tg-buy").value) || null : null, note: $("#tg-note").value.trim() || null };
+    let row, label;
+    if (isRsi) {
+      const lvl = Number($("#tg-lvl").value), tf = $("#tg-tf").value, cond = $("#tg-cond").value;
+      if (!(lvl > 0 && lvl < 100)) return toast("O nível do RSI vai de 1 a 99.", "err");
+      row = { ...base, trigger: "rsi", rsi_tf: tf, rsi_level: lvl, price_usd: null, direction: cond };
+      label = `RSI ${RSI_LABEL[tf].toLowerCase()} ${cond === "up" ? "acima" : "abaixo"} de ${lvl}`;
+    } else {
+      const v = Number($("#tg-price").value);
+      if (!(v > 0)) return;
+      const now = curPx(sym);
+      row = { ...base, trigger: "price", price_usd: v, direction: now && v < now ? "down" : "up" };
+      label = `a ${price(v, "USD")}`;
+    }
     const { data, error } = await sb.from("sell_targets").insert(row).select().single();
     if (error) return toast(`✗ Não consegui salvar a meta: ${esc(error.message)}`, "err", 12000);
     S.targets.push(data);
-    toast(`✓ Meta de ${buy ? "compra" : "venda"} criada: ${esc(sym)} a ${price(v, "USD")}${hasNotify() ? "" : " (ligue os avisos em Cadastros)"}`);
+    toast(`✓ Meta de ${buy ? "compra" : "venda"} criada: ${esc(sym)} ${label}${hasNotify() ? "" : " (ligue os avisos em Cadastros)"}`);
     renderAssetTargets(sym);
     setTargetsTabLabel(sym);
     renderTargetsCard();
@@ -876,7 +974,7 @@ async function targetAction(e) {
   } else if (re) {
     const t = S.targets.find((x) => x.id === re.dataset.tgRe);
     const now = curPx(t.symbol);
-    const patch = { active: true, hit_at: null, hit_price: null, notified: false, direction: now && Number(t.price_usd) < now ? "down" : "up" };
+    const patch = { active: true, hit_at: null, hit_price: null, hit_rsi: null, notified: false, direction: t.trigger === "rsi" ? t.direction : now && Number(t.price_usd) < now ? "down" : "up" };
     const { error } = await sb.from("sell_targets").update(patch).eq("id", t.id);
     if (error) { toast(`✗ ${esc(error.message)}`, "err"); return false; }
     Object.assign(t, patch);
@@ -899,7 +997,10 @@ function renderTargetsCard() {
     return;
   }
   // as ativas mais perto de bater primeiro
-  const near = (t) => { const p = curPx(t.symbol); return p ? Math.abs(Number(t.price_usd) / p - 1) : 9; };
+  const near = (t) => {
+    if (t.trigger === "rsi") { const v = rsiMem.get(`${t.symbol}|${t.rsi_tf}`)?.v; return v != null ? Math.abs(v - Number(t.rsi_level)) / 100 : 9; }
+    const p = curPx(t.symbol); return p ? Math.abs(Number(t.price_usd) / p - 1) : 9;
+  };
   list.sort((a, b) => tgtDone(a) - tgtDone(b) || near(a) - near(b));
   const act = list.filter((t) => !tgtDone(t)).length;
   $("#targets-sum").textContent = `${act} ativa(s)${hasNotify() ? "" : " · avisos desligados (Cadastros)"}`;
@@ -911,7 +1012,7 @@ function checkTargetsLive() {
   S.tgtToasted ||= new Set();
   let any = false;
   for (const t of S.targets) {
-    if (tgtDone(t) || S.tgtToasted.has(t.id)) continue;
+    if (tgtDone(t) || t.trigger === "rsi" || S.tgtToasted.has(t.id)) continue;
     const p = S.live[t.symbol]?.p;
     if (!p) continue;
     const hit = t.direction === "up" ? p >= Number(t.price_usd) : p <= Number(t.price_usd);
@@ -998,7 +1099,7 @@ function advChart(tv, interval) {
   tvWidget($("#d-chart"), "advanced-chart", {
     autosize: true, symbol: tv, interval, timezone: "America/Sao_Paulo", theme: theme(), style: "1",
     locale: "br", allow_symbol_change: true, hide_side_toolbar: false, calendar: false, support_host: "https://www.tradingview.com",
-    backgroundColor: cssVar("--panel"), gridColor: cssVar("--grid"),
+    backgroundColor: cssVar("--panel"), gridColor: cssVar("--grid"), studies: ["STD;RSI"],
   });
 }
 function setTheme(t) {

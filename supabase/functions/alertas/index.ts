@@ -69,6 +69,37 @@ async function priceRange(sym: string): Promise<{ hi: number; lo: number; last: 
   return null;
 }
 
+// RSI de Wilder (o mesmo do TradingView), calculado só com velas já fechadas da Binance
+const TF_LABEL: Record<string, string> = { "15m": "15 min", "1h": "1 h", "4h": "4 h", "1d": "diário", "1w": "semanal", "1M": "mensal" };
+function wilderRsi(c: number[], n: number): number | null {
+  if (c.length < n + 1) return null;
+  let g = 0, l = 0;
+  for (let i = 1; i <= n; i++) { const d = c[i] - c[i - 1]; g += Math.max(d, 0); l += Math.max(-d, 0); }
+  g /= n; l /= n;
+  for (let i = n + 1; i < c.length; i++) { const d = c[i] - c[i - 1]; g = (g * (n - 1) + Math.max(d, 0)) / n; l = (l * (n - 1) + Math.max(-d, 0)) / n; }
+  return l === 0 ? 100 : 100 - 100 / (1 + g / l);
+}
+const rsiCache = new Map<string, Promise<{ rsi: number; last: number } | null>>();
+function rsiOf(sym: string, tf: string, n: number) {
+  const key = `${sym}|${tf}|${n}`;
+  if (!rsiCache.has(key)) rsiCache.set(key, (async () => {
+    for (const q of ["USDT", "FDUSD", "USDC"]) {
+      try {
+        const r = await fetch(`https://api.binance.com/api/v3/klines?symbol=${sym}${q}&interval=${tf}&limit=500`);
+        if (!r.ok) continue;
+        const k = (await r.json()) as any[];
+        if (!k.length) continue;
+        const closed = k.filter((x) => Number(x[6]) < Date.now()).map((x) => Number(x[4]));
+        const rsi = wilderRsi(closed, n);
+        if (rsi == null) return null;
+        return { rsi, last: Number(k[k.length - 1][4]) };
+      } catch { /* próximo par */ }
+    }
+    return null;
+  })());
+  return rsiCache.get(key)!;
+}
+
 async function usdBrl(): Promise<number | null> {
   try {
     const r = await fetch("https://api.binance.com/api/v3/ticker/price?symbol=USDTBRL");
@@ -80,7 +111,7 @@ async function check() {
   const { data: targets, error } = await admin.from("sell_targets").select("*").eq("active", true).is("hit_at", null);
   if (error) throw error;
   if (!targets?.length) return { metas: 0, atingidas: 0 };
-  const syms = [...new Set(targets.map((t) => t.symbol.toUpperCase()))];
+  const syms = [...new Set(targets.filter((t) => t.trigger !== "rsi").map((t) => t.symbol.toUpperCase()))];
   const prices = new Map<string, { hi: number; lo: number; last: number } | null>();
   await Promise.all(syms.map(async (s) => prices.set(s, await priceRange(s))));
   const { data: prefs } = await admin.from("user_prefs").select("user_id, ntfy_topic, notify_email").in("user_id", [...new Set(targets.map((t) => t.user_id))]);
@@ -88,22 +119,32 @@ async function check() {
   const brl = await usdBrl();
   const out: any[] = [];
   for (const t of targets) {
-    const p = prices.get(t.symbol.toUpperCase());
-    if (!p) continue;
-    const target = Number(t.price_usd);
-    const hit = t.direction === "up" ? p.hi >= target : p.lo <= target;
-    if (!hit) continue;
-    const verb = t.direction === "up" ? "chegou a" : "caiu para";
+    const sym = t.symbol.toUpperCase();
     const buy = t.kind === "buy";
-    const title = `${buy ? "🛒" : "🎯"} ${t.symbol} ${verb} ${fmtUsd(target)}`;
+    let last: number, title: string, rsiVal: number | null = null;
+    if (t.trigger === "rsi") {
+      const r = await rsiOf(sym, t.rsi_tf, t.rsi_period || 14);
+      if (!r) continue;
+      const lvl = Number(t.rsi_level);
+      if (!(t.direction === "up" ? r.rsi >= lvl : r.rsi <= lvl)) continue;
+      last = r.last; rsiVal = r.rsi;
+      title = `${buy ? "🛒" : "🎯"} ${sym}: RSI ${TF_LABEL[t.rsi_tf] || t.rsi_tf} em ${r.rsi.toFixed(1).replace(".", ",")} (${t.direction === "up" ? "acima" : "abaixo"} de ${lvl.toLocaleString("pt-BR")})`;
+    } else {
+      const p = prices.get(sym);
+      if (!p) continue;
+      const target = Number(t.price_usd);
+      if (!(t.direction === "up" ? p.hi >= target : p.lo <= target)) continue;
+      last = p.last;
+      title = `${buy ? "🛒" : "🎯"} ${sym} ${t.direction === "up" ? "chegou a" : "caiu para"} ${fmtUsd(target)}`;
+    }
     const what = buy
-      ? (t.buy_usd ? `Sua meta: comprar ${fmtUsd(Number(t.buy_usd))}${brl ? ` (${fmtBrl(Number(t.buy_usd) * brl)})` : ""} ≈ ${(Number(t.buy_usd) / p.last).toLocaleString("pt-BR", { maximumSignificantDigits: 6 })} ${t.symbol}.` : "Meta de compra atingida.")
-      : t.sell_pct ? `Sua meta: vender ${Number(t.sell_pct).toLocaleString("pt-BR")}% da posição.` : t.direction === "up" ? "Meta de venda atingida." : "Alerta de queda atingido.";
-    const lines = [`Preço agora: ${fmtUsd(p.last)}${brl ? ` (${fmtBrl(p.last * brl)})` : ""}.`, what, t.note ? `Nota: ${t.note}` : ""].filter(Boolean);
+      ? (t.buy_usd ? `Sua meta: comprar ${fmtUsd(Number(t.buy_usd))}${brl ? ` (${fmtBrl(Number(t.buy_usd) * brl)})` : ""} ≈ ${(Number(t.buy_usd) / last).toLocaleString("pt-BR", { maximumSignificantDigits: 6 })} ${sym}.` : "Meta de compra atingida.")
+      : t.sell_pct ? `Sua meta: vender ${Number(t.sell_pct).toLocaleString("pt-BR")}% da posição.` : t.trigger === "rsi" ? "Alerta de RSI atingido." : t.direction === "up" ? "Meta de venda atingida." : "Alerta de queda atingido.";
+    const lines = [`Preço agora: ${fmtUsd(last)}${brl ? ` (${fmtBrl(last * brl)})` : ""}.`, what, t.note ? `Nota: ${t.note}` : ""].filter(Boolean);
     const res = await notify(prefOf.get(t.user_id), title, lines.join("\n"), { tags: [t.direction === "up" ? "chart_with_upwards_trend" : "chart_with_downwards_trend"], priority: 4 });
     const notified = res.ok.length > 0, err = res.errs.join(" | ");
-    await admin.from("sell_targets").update({ hit_at: new Date().toISOString(), hit_price: p.last, active: false, notified }).eq("id", t.id);
-    out.push({ symbol: t.symbol, alvo: target, preco: p.last, avisado: notified, erro: err || undefined });
+    await admin.from("sell_targets").update({ hit_at: new Date().toISOString(), hit_price: last, hit_rsi: rsiVal, active: false, notified }).eq("id", t.id);
+    out.push({ symbol: sym, gatilho: t.trigger, preco: last, rsi: rsiVal, avisado: notified, erro: err || undefined });
   }
   return { metas: targets.length, atingidas: out.length, detalhes: out };
 }
