@@ -325,7 +325,7 @@ async function allRows(make) {
   return { data: out, error: null };
 }
 async function loadAll() {
-  const [w, h, m, st, tx, sn, pf, cb, fl, op, fu] = await Promise.all([
+  const [w, h, m, st, tx, sn, pf, cb, fl, op, fu, tg] = await Promise.all([
     sb.from("wallets").select("*").order("created_at"),
     sb.from("holdings").select("*"),
     sb.from("manual_assets").select("*").order("created_at"),
@@ -337,6 +337,7 @@ async function loadAll() {
     sb.from("token_flags").select("*"),
     sb.from("manual_ops").select("*").order("op_date"),
     allRows(() => sb.from("futures_income").select("ts,kind,asset,amount,trade_id").order("ts").order("id")),
+    sb.from("sell_targets").select("*").order("price_usd"),
   ]);
   for (const r of [w, h, m, st, tx, sn]) if (r.error) throw r.error;
   S.wallets = w.data;
@@ -349,6 +350,7 @@ async function loadAll() {
   S.cb = Object.fromEntries((cb.data || []).map((c) => [c.symbol, c]));
   S.ops = op.data || [];
   S.fut = fu.data || [];
+  S.targets = tg.data || [];
   S.flags = Object.fromEntries((fl.data || []).map((x) => [`${x.network}:${x.contract.toLowerCase()}`, x.status]));
   const last = S.holdings.reduce((m, x) => (x.updated_at > m ? x.updated_at : m), "");
   $("#last-sync").textContent = last ? `Saldos atualizados ${ago(last)}` : "Ainda não sincronizado";
@@ -416,6 +418,7 @@ setInterval(() => {
   if (dirty || S.fxSrc === "usdt") {
     dirty = false;
     renderPainel();
+    checkTargetsLive();
   }
 }, 1000);
 setInterval(() => S.user && loadQuotes(), 30_000);
@@ -425,6 +428,7 @@ if (new URLSearchParams(location.search).has("debug")) window.__S = S; // para d
 // ------------------------------------------------------------------ render
 function renderAll() {
   renderPainel();
+  renderTargetsCard();
   renderChart();
   renderMovs();
   renderCadastros();
@@ -757,8 +761,196 @@ function showDetailTab(tab) {
   $("#d-movs").classList.toggle("hidden", tab !== "movs");
   $("#d-evo").classList.toggle("hidden", tab !== "evo");
   $("#d-info").classList.toggle("hidden", tab !== "info");
+  $("#d-metas").classList.toggle("hidden", tab !== "metas");
   if (tab === "evo") renderEvolution();
+  if (tab === "metas") renderAssetTargets(S.detail?.sym);
   if (tab === "info") renderInfo();
+}
+
+// ------------------------------------------------------------------ metas de venda (avisos no celular / e-mail)
+const curPx = (sym) => cryptoRows().find((r) => r.sym === sym)?.price ?? livePrice(sym, null);
+const tgtDone = (t) => !!t.hit_at || !t.active;
+const pctTxt = (v) => (v == null || !isFinite(v) ? "—" : `${v >= 0 ? "+" : ""}${(v * 100).toLocaleString("pt-BR", { maximumFractionDigits: Math.abs(v) < 0.1 ? 1 : 0 })}%`);
+const hasNotify = () => !!(S.prefs?.ntfy_topic || S.prefs?.notify_email);
+function targetsOf(sym) {
+  return (S.targets || []).filter((t) => !sym || t.symbol === sym).sort((a, b) => tgtDone(a) - tgtDone(b) || Number(a.price_usd) - Number(b.price_usd));
+}
+function setTargetsTabLabel(sym) {
+  const n = targetsOf(sym).filter((t) => !tgtDone(t)).length;
+  $("#d-tabs").querySelector('[data-t="metas"]').textContent = n ? `Metas (${n})` : "Metas";
+}
+function tgtRow(t, withSym = false) {
+  const p = curPx(t.symbol), target = Number(t.price_usd), done = tgtDone(t), up = t.direction === "up";
+  const r = cryptoRows().find((x) => x.sym === t.symbol);
+  const q = t.sell_pct && r ? (r.amount * Number(t.sell_pct)) / 100 : null;
+  const prog = p ? Math.max(0, Math.min(1, up ? p / target : target / p)) : 0;
+  const dist = p ? target / p - 1 : null;
+  const status = done
+    ? (t.hit_at ? `<span class="up">✓ atingida em ${new Date(t.hit_at).toLocaleString("pt-BR", { dateStyle: "short", timeStyle: "short" })}${t.hit_price ? ` (${price(Number(t.hit_price), "USD")})` : ""}</span>${t.notified ? ' <span class="muted small">· aviso enviado</span>' : ""}` : '<span class="muted">pausada</span>')
+    : `<span class="muted small">${up ? "falta subir" : "falta cair"}</span> <b>${pctTxt(Math.abs(dist ?? NaN))}</b>`;
+  return `<div class="tgt ${done ? "done" : ""}">
+    <div class="tgt-main">
+      ${withSym ? `<button type="button" class="link tgt-sym" data-open="${esc(t.symbol)}">${icon(t.symbol, "crypto")}<b>${esc(t.symbol)}</b></button>` : ""}
+      <div class="tgt-what"><b>${up ? "Vender a" : "Avisar se cair a"} ${price(target, "USD")}</b><span class="muted small"> · ${price(rate() ? target * rate() : null, "BRL")}</span>
+        <div class="small muted">${t.sell_pct ? `vender ${Number(t.sell_pct).toLocaleString("pt-BR")}%${q != null ? ` (${qty(q)} ${esc(t.symbol)} ≈ ${S.hide ? MASK : money(q * target, "USD")})` : ""}` : up ? "meta de venda" : "alerta de queda"}${t.note ? ` · ${esc(t.note)}` : ""}</div>
+      </div>
+      <div class="tgt-st">${status}<div class="small muted">agora ${price(p, "USD")}</div></div>
+      <div class="tgt-btns">${done ? `<button type="button" class="btn small" data-tg-re="${t.id}">Reativar</button>` : ""}<button type="button" class="btn small ghost" data-tg-del="${t.id}" title="Excluir meta">×</button></div>
+    </div>
+    ${done ? "" : `<div class="tgt-bar"><i style="width:${(prog * 100).toFixed(1)}%"></i></div>`}
+  </div>`;
+}
+function renderAssetTargets(sym) {
+  if (!sym) return;
+  const p = curPx(sym);
+  const r = cryptoRows().find((x) => x.sym === sym);
+  const cbx = S.cb[sym], st = S.settings[sym] || {};
+  const avg = st.avg_cost_usd ? Number(st.avg_cost_usd) : cbx && Number(cbx.qty) ? Number(cbx.cost_usd) / Number(cbx.qty) : null;
+  const ath = CGM.map[sym]?.ath;
+  const quick = [
+    p && ["+25%", p * 1.25], p && ["+50%", p * 1.5], p && ["2×", p * 2], p && ["3×", p * 3],
+    avg && avg > (p || 0) && ["Preço médio", avg], ath && ath > (p || 0) && ["Máxima histórica", ath],
+  ].filter(Boolean);
+  const list = targetsOf(sym);
+  $("#d-metas").innerHTML = `
+    ${hasNotify() ? "" : '<div class="flagbox warn">Os avisos ainda não estão ligados. Configure o celular ou o e-mail em <b>Cadastros → Avisos das metas de venda</b>; enquanto isso, a meta só aparece aqui no app.</div>'}
+    <div class="tgt-list">${list.map((t) => tgtRow(t)).join("") || '<p class="muted">Nenhuma meta para este ativo ainda.</p>'}</div>
+    <form id="tg-form" class="form compact">
+      <h3>Nova meta</h3>
+      <div class="row">
+        <label>Preço alvo (US$)<input id="tg-price" type="number" step="any" min="0" required placeholder="${p ? String(+(p * 1.5).toPrecision(5)) : ""}" /></label>
+        <label>Vender (% da posição)<input id="tg-pct" type="number" step="any" min="0" max="100" placeholder="opcional" /></label>
+        <label>Nota<input id="tg-note" maxlength="120" placeholder="Ex.: garantir o custo de volta" /></label>
+      </div>
+      ${quick.length ? `<div class="chips tg-quick">${quick.map(([l, v]) => `<button type="button" class="chip-btn" data-tg-px="${v}">${l} · ${price(v, "USD")}</button>`).join("")}</div>` : ""}
+      <p class="small muted" id="tg-preview"></p>
+      <div class="row-btns"><button class="btn primary" type="submit">Criar meta</button></div>
+      <p class="hint">Acima do preço atual vira <b>meta de venda</b>; abaixo, <b>alerta de queda</b>. O servidor confere os preços a cada 10 minutos (pegando os picos do intervalo) e avisa uma vez; depois você pode reativar.</p>
+    </form>`;
+  const prev = () => {
+    const v = Number($("#tg-price").value), k = Number($("#tg-pct").value);
+    if (!v || !p) return ($("#tg-preview").textContent = "");
+    const up = v >= p, q = k && r ? (r.amount * k) / 100 : null;
+    $("#tg-preview").innerHTML = `${up ? "Meta de venda" : "Alerta de queda"}: ${pctTxt(v / p - 1)} do preço atual (${price(p, "USD")}).${q != null ? ` Vendendo ${k.toLocaleString("pt-BR")}% = ${qty(q)} ${esc(sym)} ≈ ${money(q * v, "USD")} · ${money(rate() ? q * v * rate() : null, "BRL")}.` : ""}`;
+  };
+  $("#tg-price").oninput = prev;
+  $("#tg-pct").oninput = prev;
+  $("#d-metas").onclick = async (e) => {
+    const qb = e.target.closest("[data-tg-px]");
+    if (qb) { $("#tg-price").value = +Number(qb.dataset.tgPx).toPrecision(6); prev(); return; }
+    if (await targetAction(e)) renderAssetTargets(sym);
+  };
+  $("#tg-form").onsubmit = async (e) => {
+    e.preventDefault();
+    const v = Number($("#tg-price").value), k = Number($("#tg-pct").value) || null;
+    if (!(v > 0)) return;
+    const now = curPx(sym);
+    const row = { user_id: S.user.id, symbol: sym, price_usd: v, sell_pct: k, note: $("#tg-note").value.trim() || null, direction: now && v < now ? "down" : "up" };
+    const { data, error } = await sb.from("sell_targets").insert(row).select().single();
+    if (error) return toast(`✗ Não consegui salvar a meta: ${esc(error.message)}`, "err", 12000);
+    S.targets.push(data);
+    toast(`✓ Meta criada: ${esc(sym)} a ${price(v, "USD")}${hasNotify() ? "" : " (ligue os avisos em Cadastros)"}`);
+    renderAssetTargets(sym);
+    setTargetsTabLabel(sym);
+    renderTargetsCard();
+  };
+}
+async function targetAction(e) {
+  const del = e.target.closest("[data-tg-del]"), re = e.target.closest("[data-tg-re]");
+  if (del) {
+    if (!(await confirmBox("Excluir esta meta?"))) return false;
+    const { error } = await sb.from("sell_targets").delete().eq("id", del.dataset.tgDel);
+    if (error) { toast(`✗ ${esc(error.message)}`, "err"); return false; }
+    S.targets = S.targets.filter((t) => t.id !== del.dataset.tgDel);
+  } else if (re) {
+    const t = S.targets.find((x) => x.id === re.dataset.tgRe);
+    const now = curPx(t.symbol);
+    const patch = { active: true, hit_at: null, hit_price: null, notified: false, direction: now && Number(t.price_usd) < now ? "down" : "up" };
+    const { error } = await sb.from("sell_targets").update(patch).eq("id", t.id);
+    if (error) { toast(`✗ ${esc(error.message)}`, "err"); return false; }
+    Object.assign(t, patch);
+    S.tgtToasted?.delete(t.id);
+  } else return false;
+  renderTargetsCard();
+  if (S.detail?.sym) setTargetsTabLabel(S.detail.sym);
+  return true;
+}
+function renderTargetsCard() {
+  const card = $("#targets-card");
+  if (!card) return;
+  const recent = Date.now() - 30 * 86400e3;
+  const list = targetsOf().filter((t) => !tgtDone(t) || (t.hit_at && new Date(t.hit_at).getTime() > recent));
+  card.classList.toggle("hidden", !list.length);
+  if (!list.length) return;
+  // as ativas mais perto de bater primeiro
+  const near = (t) => { const p = curPx(t.symbol); return p ? Math.abs(Number(t.price_usd) / p - 1) : 9; };
+  list.sort((a, b) => tgtDone(a) - tgtDone(b) || near(a) - near(b));
+  const act = list.filter((t) => !tgtDone(t)).length;
+  $("#targets-sum").textContent = `${act} ativa(s)${hasNotify() ? "" : " · avisos desligados (Cadastros)"}`;
+  $("#targets-list").innerHTML = `<div class="tgt-list">${list.map((t) => tgtRow(t, true)).join("")}</div>`;
+}
+// com o app aberto: avisa na hora (o servidor manda o celular/e-mail na próxima conferência)
+function checkTargetsLive() {
+  if (!S.targets?.length) return;
+  S.tgtToasted ||= new Set();
+  let any = false;
+  for (const t of S.targets) {
+    if (tgtDone(t) || S.tgtToasted.has(t.id)) continue;
+    const p = S.live[t.symbol]?.p;
+    if (!p) continue;
+    const hit = t.direction === "up" ? p >= Number(t.price_usd) : p <= Number(t.price_usd);
+    if (!hit) continue;
+    S.tgtToasted.add(t.id);
+    any = true;
+    toast(`🎯 <b>${esc(t.symbol)}</b> ${t.direction === "up" ? "chegou a" : "caiu para"} ${price(Number(t.price_usd), "USD")}${t.sell_pct ? ` — sua meta: vender ${Number(t.sell_pct).toLocaleString("pt-BR")}%` : ""}`, "info", 0);
+  }
+  if (any) renderTargetsCard();
+}
+// Cadastros → canais de aviso
+function renderNotifyBox() {
+  const box = $("#notify-box");
+  if (!box) return;
+  const pf = S.prefs || {};
+  box.innerHTML = `
+    <div class="nt-grid">
+      <div class="nt-ch">
+        <h3>📱 Celular (app ntfy, grátis)</h3>
+        ${pf.ntfy_topic ? `
+          <p class="small">Canal ativo: <code class="cp" id="nt-topic">${esc(pf.ntfy_topic)}</code> <button type="button" class="btn small" id="nt-copy">Copiar</button></p>
+          <ol class="small muted">
+            <li>Instale o app <b>ntfy</b> (App Store ou Google Play).</li>
+            <li>Toque em <b>+</b> e cole o nome do canal acima (servidor padrão, ntfy.sh).</li>
+            <li>Permita notificações e toque em <b>Enviar aviso de teste</b> aqui embaixo.</li>
+          </ol>
+          <p class="hint">O nome do canal funciona como senha: quem souber o nome recebe os avisos (só ativo e preço, nunca saldo). Não compartilhe.</p>
+          <div class="row-btns"><button type="button" class="btn small" id="nt-new">Gerar outro canal</button><button type="button" class="btn small ghost" id="nt-off">Desligar celular</button></div>`
+        : `<p class="small muted">Receba uma notificação no celular quando um ativo chegar na meta, mesmo com o app fechado.</p>
+           <button type="button" class="btn primary small" id="nt-new">Ativar avisos no celular</button>`}
+      </div>
+      <div class="nt-ch">
+        <h3>✉️ E-mail</h3>
+        <form id="nt-mail-form" class="form compact">
+          <label>Endereço<input id="nt-mail" type="email" placeholder="voce@email.com" value="${esc(pf.notify_email || "")}" /></label>
+          <div class="row-btns"><button class="btn small" type="submit">${pf.notify_email ? "Salvar" : "Ativar e-mail"}</button>${pf.notify_email ? '<button type="button" class="btn small ghost" id="nt-mail-off">Desligar e-mail</button>' : ""}</div>
+        </form>
+        <p class="hint">O e-mail chega pelo serviço ntfy (remetente ntfy). Confira o spam no primeiro aviso.</p>
+      </div>
+    </div>
+    <div class="row-btns"><button type="button" class="btn" id="nt-test" ${hasNotify() ? "" : "disabled"}>Enviar aviso de teste</button></div>`;
+  if (!$("#nt-mail").value && S.user?.email) $("#nt-mail").placeholder = S.user.email;
+}
+async function savePrefs(patch) {
+  const { error } = await sb.from("user_prefs").upsert({ user_id: S.user.id, ...patch, updated_at: new Date().toISOString() });
+  if (error) { toast(`✗ Não consegui salvar: ${esc(error.message)}`, "err", 12000); return false; }
+  S.prefs = { ...(S.prefs || {}), ...patch };
+  renderNotifyBox();
+  renderTargetsCard();
+  return true;
+}
+function newTopic() {
+  const a = new Uint8Array(12);
+  crypto.getRandomValues(a);
+  return "carteira-" + [...a].map((b) => "abcdefghijkmnpqrstuvwxyz23456789"[b % 32]).join("");
 }
 
 // ------------------------------------------------------------------ tema claro / escuro
@@ -1334,7 +1526,9 @@ function openAsset(sym, isB3 = false) {
   $("#d-tabs").querySelector('[data-t="chart"]').classList.remove("hidden");
   $("#d-tabs").querySelector('[data-t="movs"]').classList.remove("hidden");
   $("#d-tabs").querySelector('[data-t="info"]').classList.toggle("hidden", isB3);
+  $("#d-tabs").querySelector('[data-t="metas"]').classList.toggle("hidden", isB3);
   $("#d-tabs").querySelector('[data-t="evo"]').classList.add("hidden");
+  if (!isB3) setTargetsTabLabel(sym);
   $("#d-evo").innerHTML = "";
   S.movSrcSym = null;
   if (!isB3) renderAssetMovs(sym);
@@ -1845,6 +2039,7 @@ function renderWalletForm() {
     : "";
 }
 function renderCadastros() {
+  renderNotifyBox();
   // o botão avulso da Crypto.com só aparece até a carteira existir (depois fica na própria carteira)
   $("#cdc-hint")?.classList.toggle("hidden", S.wallets.some((w) => w.kind === "cryptocom"));
   $("#wallet-list").innerHTML = S.wallets
@@ -2736,6 +2931,45 @@ function bind() {
     await afterOpsChange(o.asset_id);
   });
   $("#d-close").addEventListener("click", closeModal);
+  $("#targets-list").addEventListener("click", async (e) => {
+    const o = e.target.closest("[data-open]");
+    if (o) return openAsset(o.dataset.open);
+    await targetAction(e);
+  });
+  $("#notify-box").addEventListener("click", async (e) => {
+    const id = e.target.closest("button")?.id;
+    if (id === "nt-new") {
+      if (S.prefs?.ntfy_topic && !(await confirmBox("Gerar outro canal? O celular precisará assinar o novo nome."))) return;
+      if (await savePrefs({ ntfy_topic: newTopic() })) toast("✓ Canal criado. Agora assine o nome dele no app ntfy.");
+    } else if (id === "nt-off") {
+      if (await savePrefs({ ntfy_topic: null })) toast("Avisos no celular desligados.", "info");
+    } else if (id === "nt-copy") {
+      navigator.clipboard?.writeText(S.prefs.ntfy_topic).then(() => toast("✓ Nome do canal copiado"), () => {});
+    } else if (id === "nt-mail-off") {
+      if (await savePrefs({ notify_email: null })) toast("Avisos por e-mail desligados.", "info");
+    } else if (id === "nt-test") {
+      const b = e.target.closest("button");
+      b.disabled = true;
+      b.textContent = "Enviando…";
+      try {
+        const { data, error } = await sb.functions.invoke("alertas", { body: { teste: true }, region: REGION });
+        if (error) throw new Error((await error.context?.json?.().catch(() => null))?.erro || error.message);
+        if (data.canais?.length) toast(`✓ Aviso de teste enviado (${data.canais.join(" e ")}). Confira o ${data.canais.includes("celular") ? "celular" : "e-mail"}.`);
+        if (data.erros?.length) toast(`✗ ${esc(data.erros.join(" | "))}`, "err", 15000);
+      } catch (err) {
+        toast(`✗ Falha no teste: ${esc(err.message || err)}`, "err", 15000);
+      }
+      b.disabled = false;
+      b.textContent = "Enviar aviso de teste";
+    }
+  });
+  $("#notify-box").addEventListener("submit", async (e) => {
+    if (e.target.id !== "nt-mail-form") return;
+    e.preventDefault();
+    const v = $("#nt-mail").value.trim() || S.user?.email || "";
+    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(v)) return toast("Informe um e-mail válido.", "err");
+    if (await savePrefs({ notify_email: v })) toast("✓ E-mail salvo. Use “Enviar aviso de teste” para conferir.");
+  });
   $("#spam-note").addEventListener("click", (e) => {
     if (e.target.id !== "show-flagged") return;
     e.preventDefault();

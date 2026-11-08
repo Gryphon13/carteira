@@ -13,7 +13,7 @@
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%23f5a524'/><path d='M8 21l5-6 4 3 7-8' stroke='white' stroke-width='3' fill='none' stroke-linecap='round' stroke-linejoin='round'/></svg>" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="style.css?v=20" />
+  <link rel="stylesheet" href="style.css?v=21" />
 </head>
 <body>
   <!-- Login -->
@@ -146,6 +146,11 @@
         </div>
         <p id="spam-note" class="note hidden"></p>
         <div class="table-wrap"><table class="assets" id="crypto-table"></table></div>
+      </section>
+
+      <section class="card hidden" id="targets-card">
+        <div class="card-head"><h2>Metas de venda</h2><span class="muted small" id="targets-sum"></span></div>
+        <div id="targets-list"></div>
       </section>
 
       <section class="card">
@@ -292,6 +297,11 @@
       </section>
 
       <section class="card">
+        <div class="card-head"><h2>Avisos das metas de venda</h2><span class="muted small">celular e e-mail</span></div>
+        <div id="notify-box"></div>
+      </section>
+
+      <section class="card">
         <div class="card-head"><h2>Lista do TradingView</h2><span class="muted small" id="tv-count"></span></div>
         <form id="tv-form" class="form compact">
           <p class="hint">No TradingView, abra a lista → botão <b>Visão avançada</b> → <b>Exportar lista</b> e escolha o arquivo .txt abaixo. Se o seu plano não tiver exportação, cole os símbolos separados por vírgula ou um por linha (ex.: <code>BINANCE:BTCUSDT, BMFBOVESPA:PETR4</code>). Linhas começando com <code>###</code> viram seções.</p>
@@ -333,10 +343,11 @@
       </div>
       <div class="d-stats" id="d-stats"></div>
       <div id="d-flag"></div>
-      <div class="seg" id="d-tabs"><button data-t="chart" class="active">Gráfico</button><button data-t="evo" class="hidden">Evolução da posição</button><button data-t="movs">Movimentações</button><button data-t="info">Informações</button></div>
+      <div class="seg" id="d-tabs"><button data-t="chart" class="active">Gráfico</button><button data-t="evo" class="hidden">Evolução da posição</button><button data-t="movs">Movimentações</button><button data-t="metas">Metas</button><button data-t="info">Informações</button></div>
       <div id="d-chart" class="tv-chart"></div>
       <div id="d-movs" class="hidden"></div>
       <div id="d-evo" class="hidden"></div>
+      <div id="d-metas" class="hidden"></div>
       <div id="d-info" class="hidden"></div>
       <div class="d-cols">
         <div>
@@ -362,6 +373,6 @@
   </div>
 
   <script src="https://unpkg.com/lightweight-charts@4.2.3/dist/lightweight-charts.standalone.production.js"></script>
-  <script type="module" src="app.js?v=33"></script>
+  <script type="module" src="app.js?v=34"></script>
 </body>
 </html>

@@ -374,3 +374,20 @@ label.inline select { width: auto; }
 .toast .t-x { background: none; border: 0; color: var(--muted); font-size: 18px; line-height: 1; cursor: pointer; padding: 0 2px; }
 @keyframes tin { from { opacity: 0; transform: translateY(8px); } }
 .mov-src { margin: 4px 0 12px; }
+
+/* metas de venda */
+.tgt-list { display: flex; flex-direction: column; gap: 8px; margin-bottom: 12px; }
+.tgt { border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; background: var(--panel-2); }
+.tgt.done { opacity: .75; }
+.tgt-main { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.tgt-sym { display: inline-flex; align-items: center; gap: 6px; background: none; border: 0; color: var(--text); cursor: pointer; font: inherit; padding: 0; min-width: 70px; }
+.tgt-what { flex: 1 1 220px; }
+.tgt-st { text-align: right; flex: 0 0 auto; }
+.tgt-btns { display: flex; gap: 6px; }
+.tgt-bar { height: 6px; border-radius: 99px; background: var(--line); margin-top: 8px; overflow: hidden; }
+.tgt-bar i { display: block; height: 100%; background: var(--accent); border-radius: 99px; }
+.tg-quick { margin: 4px 0 8px; }
+.nt-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px; margin-bottom: 12px; }
+.nt-ch { border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; }
+.nt-ch h3 { margin: 0 0 6px; font-size: 15px; }
+.nt-ch ol { padding-left: 18px; margin: 6px 0; }
