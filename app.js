@@ -950,7 +950,14 @@ function renderNotifyBox() {
           <label>Endereço<input id="nt-mail" type="email" placeholder="voce@email.com" value="${esc(pf.notify_email || "")}" /></label>
           <div class="row-btns"><button class="btn small" type="submit">${pf.notify_email ? "Salvar" : "Ativar e-mail"}</button>${pf.notify_email ? '<button type="button" class="btn small ghost" id="nt-mail-off">Desligar e-mail</button>' : ""}</div>
         </form>
-        <p class="hint">O e-mail chega pelo serviço ntfy (remetente ntfy). Confira o spam no primeiro aviso.</p>
+        <details class="hint"><summary>Primeira vez: ligar o envio de e-mail (5 minutos)</summary>
+          <ol>
+            <li>Crie uma conta grátis em <a href="https://resend.com/signup" target="_blank" rel="noopener">resend.com</a> <b>com o mesmo e-mail que vai receber os avisos</b> (sem domínio próprio, o Resend só entrega para o e-mail da conta).</li>
+            <li>No Resend: <b>API Keys → Create API Key</b> (permissão “Sending access”) e copie a chave (começa com <code>re_</code>).</li>
+            <li>No Supabase: <a href="https://supabase.com/dashboard/project/agfetzppqisffbfkdfaw/functions/secrets" target="_blank" rel="noopener">Edge Functions → Secrets</a> → <b>Add new secret</b>, nome <code>RESEND_API_KEY</code>, cole a chave e salve.</li>
+            <li>Volte aqui e clique em <b>Enviar aviso de teste</b>. Confira também o spam no primeiro e-mail.</li>
+          </ol>
+        </details>
       </div>
     </div>
     <div class="row-btns"><button type="button" class="btn" id="nt-test" ${hasNotify() ? "" : "disabled"}>Enviar aviso de teste</button></div>`;

@@ -23,7 +23,7 @@ async function ntfy(topic: string, title: string, message: string, extra: Record
   });
   if (!r.ok) throw new Error(`ntfy respondeu ${r.status}: ${(await r.text()).slice(0, 150)}`);
 }
-// e-mail: pelo Resend se houver chave (RESEND_API_KEY); senão, pelo próprio ntfy (encaminhamento grátis)
+// e-mail pelo Resend (chave RESEND_API_KEY nos segredos do Supabase; sem domínio próprio, só envia para o e-mail da conta Resend)
 async function email(to: string, title: string, message: string) {
   const key = Deno.env.get("RESEND_API_KEY");
   if (key) {
@@ -35,9 +35,7 @@ async function email(to: string, title: string, message: string) {
     if (!r.ok) throw new Error(`e-mail (Resend) respondeu ${r.status}: ${(await r.text()).slice(0, 150)}`);
     return;
   }
-  await ntfy("carteira-mail-" + crypto.randomUUID(), title, message, { email: to }).catch((e) => {
-    throw new Error("e-mail: " + String(e.message || e));
-  });
+  throw new Error("e-mail ainda não configurado: falta a chave do Resend (RESEND_API_KEY) no Supabase");
 }
 type Prefs = { ntfy_topic?: string | null; notify_email?: string | null };
 // envia por todos os canais configurados; devolve o que funcionou e os erros
