@@ -1624,7 +1624,7 @@ function renderTape() {
 }
 // fita de cotações própria (preços ao vivo da Binance + B3/Ibovespa/dólar do app), sem depender do TradingView
 function tapeItems() {
-  const items = cryptoRows().filter((r) => r.value && !STABLE.has(r.sym)).slice(0, 12)
+  const items = cryptoRows().filter((r) => r.value && !STABLE.has(r.sym) && !["BRL", "EUR", "USD"].includes(r.sym)).slice(0, 12)
     .map((r) => ({ k: "c:" + r.sym, label: r.sym, icon: icon(r.sym, "crypto"), get: () => ({ p: livePrice(r.sym, r.price), ch: change24(r.sym), ccy: "USD" }) }));
   items.push({ k: "ibov", label: "Ibovespa", get: () => ({ p: S.ibov?.price, ch: S.ibov?.prev ? S.ibov.price / S.ibov.prev - 1 : null, ccy: "pts" }) });
   for (const a of S.manual.filter((m) => m.kind === "b3")) {
