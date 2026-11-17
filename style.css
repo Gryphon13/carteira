@@ -407,3 +407,15 @@ label.inline select { width: auto; }
 .ch-th { white-space: nowrap; }
 .per-btn { font: inherit; font-size: 11px; font-weight: 700; color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, transparent); border: 0; border-radius: 99px; padding: 2px 8px; margin-left: 2px; cursor: pointer; text-transform: none; letter-spacing: 0; }
 .per-btn:hover { background: color-mix(in srgb, var(--accent) 26%, transparent); }
+
+/* fita de cotações própria (plano B do TradingView) */
+.nt-tape { overflow: hidden; height: 46px; display: flex; align-items: center; mask-image: linear-gradient(90deg, transparent, #000 3%, #000 97%, transparent); }
+.nt-track { display: inline-flex; gap: 28px; white-space: nowrap; animation: nt-scroll 60s linear infinite; padding-left: 28px; }
+.nt-tape:hover .nt-track { animation-play-state: paused; }
+.nt-item { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; }
+.nt-item .ico, .nt-item img { width: 18px; height: 18px; }
+.nt-p { font-variant-numeric: tabular-nums; }
+.nt-ch { font-size: 12px; font-variant-numeric: tabular-nums; }
+@keyframes nt-scroll { from { transform: translateX(0); } to { transform: translateX(-50%); } }
+.tv-fail { padding: 10px 12px; border-radius: 10px; background: var(--panel-2); color: var(--muted); font-size: 13px; margin-bottom: 8px; }
+.fb-chart { height: calc(100% - 44px); min-height: 360px; }

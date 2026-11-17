@@ -387,9 +387,11 @@ async function loadQuotes() {
       S.fx.comPrev = data.fx.prev;
     }
     S.b3 = data.b3 || {};
+    if (data.ibov?.price) S.ibov = data.ibov;
   } catch (e) {
     console.warn("cotações", e);
   }
+  updateNativeTape();
   renderFx();
   if (S.user && S.holdings) renderPie();
 }
@@ -434,6 +436,7 @@ setInterval(() => {
   if (dirty || S.fxSrc === "usdt") {
     dirty = false;
     renderPainel();
+    updateNativeTape();
     checkTargetsLive();
   }
 }, 1000);
@@ -1116,7 +1119,33 @@ function advChart(tv, interval) {
     autosize: true, symbol: tv, interval, timezone: "America/Sao_Paulo", theme: theme(), style: "1",
     locale: "br", allow_symbol_change: true, hide_side_toolbar: false, calendar: false, support_host: "https://www.tradingview.com",
     backgroundColor: cssVar("--panel"), gridColor: cssVar("--grid"), studies: ["STD;RSI"],
-  });
+  }, () => fallbackChart(tv, interval));
+}
+// gráfico próprio (velas da Binance) quando o TradingView não carrega
+let fbChart = null;
+async function fallbackChart(tv, interval) {
+  const el = $("#d-chart");
+  const m = /^BINANCE:([A-Z0-9]+?)(USDT|FDUSD|USDC)$/.exec(tv || "");
+  const link = `<a href="https://br.tradingview.com/chart/?symbol=${encodeURIComponent(tv)}" target="_blank" rel="noopener">abrir no TradingView ↗</a>`;
+  if (!m) {
+    el.innerHTML = `<div class="tv-fail">O gráfico do TradingView não carregou nesta conexão. Tente recarregar a página ou ${link}.</div>`;
+    return;
+  }
+  const tf = { 15: "15m", 60: "1h", 240: "4h", D: "1d", W: "1w", M: "1M" }[interval] || "1d";
+  el.innerHTML = `<div class="tv-fail small">O TradingView não carregou nesta conexão; mostrando o gráfico do próprio app (Binance, ${esc(RSI_LABEL[tf] || tf)}) · ${link}</div><div class="fb-chart"></div>`;
+  try {
+    const r = await fetch(`${KLINES}?symbol=${m[1]}${m[2]}&interval=${tf}&limit=500`);
+    const k = await r.json();
+    const box = el.querySelector(".fb-chart");
+    if (!box) return;
+    if (fbChart) { try { fbChart.remove(); } catch { /* */ } }
+    fbChart = LightweightCharts.createChart(box, { ...chartOpts(), autoSize: true, timeScale: { timeVisible: tf !== "1d" && tf !== "1w" && tf !== "1M" }, rightPriceScale: { borderVisible: false } });
+    const s = fbChart.addCandlestickSeries({ upColor: cssVar("--green"), downColor: cssVar("--red"), wickUpColor: cssVar("--green"), wickDownColor: cssVar("--red"), borderVisible: false });
+    s.setData(k.map((x) => ({ time: Math.floor(x[0] / 1000), open: +x[1], high: +x[2], low: +x[3], close: +x[4] })));
+    fbChart.timeScale().fitContent();
+  } catch {
+    el.querySelector(".fb-chart").innerHTML = `<p class="muted">Não consegui carregar as velas da Binance agora.</p>`;
+  }
 }
 function setTheme(t) {
   document.documentElement.dataset.theme = t;
@@ -1576,7 +1605,7 @@ function renderWatchlist() {
   tvWidget($("#tv-watch"), "market-quotes", {
     width: "100%", height, isTransparent: true, colorTheme: theme(), locale: "br", showSymbolLogo: true,
     symbolsGroups: groups.map((g) => ({ name: g.name, symbols: g.symbols.map((x) => ({ name: x, displayName: x.split(":")[1] })) })),
-  });
+  }, () => { $("#tv-watch").innerHTML = '<div class="tv-fail">A lista do TradingView não carregou nesta conexão. Tente recarregar a página mais tarde.</div>'; });
 }
 function renderTape() {
   const watch = parseWatchlist(S.prefs.tv_watchlist).flatMap((g) => g.symbols).map((x) => ({ proName: x, title: x.split(":")[1] }));
@@ -1586,9 +1615,64 @@ function renderTape() {
   if (!top.length && !watch.length) symbols.unshift({ proName: "BINANCE:BTCUSDT", title: "BTC" }, { proName: "BINANCE:ETHUSDT", title: "ETH" });
   const seen = new Set();
   symbols = symbols.filter((x) => !seen.has(x.proName) && seen.add(x.proName)).slice(0, 40);
-  tvWidget($("#tv-tape"), "ticker-tape", { symbols, showSymbolLogo: true, isTransparent: true, displayMode: "adaptive", colorTheme: theme(), locale: "br" });
+  if (S.tapeNative) return renderNativeTape();
+  tvWidget($("#tv-tape"), "ticker-tape", { symbols, showSymbolLogo: true, isTransparent: true, displayMode: "adaptive", colorTheme: theme(), locale: "br" }, () => {
+    S.tapeNative = true; // não tenta de novo até recarregar a página
+    console.warn("TradingView não carregou: usando a fita de cotações própria");
+    renderNativeTape();
+  });
 }
-function tvWidget(el, name, cfg) {
+// fita de cotações própria (preços ao vivo da Binance + B3/Ibovespa/dólar do app), sem depender do TradingView
+function tapeItems() {
+  const items = cryptoRows().filter((r) => r.value && !STABLE.has(r.sym)).slice(0, 12)
+    .map((r) => ({ k: "c:" + r.sym, label: r.sym, icon: icon(r.sym, "crypto"), get: () => ({ p: livePrice(r.sym, r.price), ch: change24(r.sym), ccy: "USD" }) }));
+  items.push({ k: "ibov", label: "Ibovespa", get: () => ({ p: S.ibov?.price, ch: S.ibov?.prev ? S.ibov.price / S.ibov.prev - 1 : null, ccy: "pts" }) });
+  for (const a of S.manual.filter((m) => m.kind === "b3")) {
+    const sym = a.symbol.toUpperCase();
+    items.push({ k: "b:" + sym, label: sym, icon: icon(sym, "b3"), get: () => { const q = S.b3[sym]; return { p: q?.price, ch: q?.prev ? q.price / q.prev - 1 : null, ccy: "BRL" }; } });
+  }
+  items.push({ k: "usd", label: "USD/BRL", get: () => ({ p: S.fx.com, ch: S.fx.comPrev ? S.fx.com / S.fx.comPrev - 1 : null, ccy: "BRL" }) });
+  return items;
+}
+function tapeVal(v) {
+  if (v.p == null) return "—";
+  if (v.ccy === "pts") return Math.round(v.p).toLocaleString("pt-BR");
+  return price(v.p, v.ccy);
+}
+function renderNativeTape() {
+  const el = $("#tv-tape");
+  const items = tapeItems();
+  S.tapeItems = items;
+  const one = items.map((it) => `<span class="nt-item" data-tk="${esc(it.k)}">${it.icon || ""}<b>${esc(it.label)}</b> <span class="nt-p"></span> <span class="nt-ch"></span></span>`).join("");
+  el.innerHTML = `<div class="nt-tape" title="Cotações do próprio app (o TradingView não carregou nesta conexão)"><div class="nt-track">${one}${one}</div></div>`;
+  const track = el.querySelector(".nt-track");
+  track.style.animationDuration = Math.max(30, items.length * 4) + "s";
+  updateNativeTape();
+}
+function updateNativeTape() {
+  if (!S.tapeNative || !S.tapeItems) return;
+  for (const it of S.tapeItems) {
+    const v = it.get();
+    for (const node of document.querySelectorAll(`#tv-tape [data-tk="${CSS.escape(it.k)}"]`)) {
+      node.querySelector(".nt-p").textContent = tapeVal(v);
+      const c = node.querySelector(".nt-ch");
+      c.textContent = v.ch == null ? "" : pct(v.ch);
+      c.className = "nt-ch " + cls(v.ch);
+    }
+  }
+}
+// O TradingView entrega os widgets por s3.tradingview.com e www.tradingview-widget.com; em algumas
+// conexões esses endereços ficam sem responder. Se o widget não carregar em 10 s, entra o plano B.
+function tvWidget(el, name, cfg, onFail) {
+  const token = (el._tvToken = (el._tvToken || 0) + 1);
+  if (onFail) {
+    const mark = () => { el._tvOk = token; };
+    new MutationObserver((muts, obs) => {
+      const f = el.querySelector("iframe");
+      if (f) { obs.disconnect(); f.addEventListener("load", mark, { once: true }); }
+    }).observe(el, { childList: true, subtree: true });
+    setTimeout(() => { if (el._tvToken === token && el._tvOk !== token) onFail(); }, 10000);
+  }
   el.innerHTML = "";
   const c = document.createElement("div");
   c.className = "tradingview-widget-container";

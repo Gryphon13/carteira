@@ -106,8 +106,8 @@ Deno.serve(async (req) => {
   let symbols: string[] = body.symbols || (new URL(req.url).searchParams.get("symbols") || "").split(",").filter(Boolean);
   symbols = [...new Set(symbols.map((s) => s.trim().toUpperCase()).filter((s) => /^[A-Z0-9]{4,7}$/.test(s)))].slice(0, 40);
 
-  const [fx, ...list] = await Promise.all([yahoo("BRL=X"), ...symbols.map((s) => yahoo(`${s}.SA`))]);
+  const [fx, ibov, ...list] = await Promise.all([yahoo("BRL=X"), yahoo("^BVSP"), ...symbols.map((s) => yahoo(`${s}.SA`))]);
   const b3: Record<string, unknown> = {};
   symbols.forEach((s, i) => (b3[s] = list[i]));
-  return json({ fx, b3, at: Date.now() });
+  return json({ fx, ibov, b3, at: Date.now() });
 });
